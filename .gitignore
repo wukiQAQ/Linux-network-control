@@ -1,0 +1,22 @@
+# 编译产物
+/bin/
+*.exe
+*.test
+*.out
+*.prof
+
+# 日志与本地数据
+*.log
+/data/
+
+# 编辑器与系统文件
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# 本地环境
+.env
+.env.*
+!.env.example
