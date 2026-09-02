@@ -5,7 +5,7 @@
 ## 项目简介
 
 - **项目**：Linux 网络流量监控系统
-- **当前阶段**：架构设计阶段，已产出《Linux 网络流量监控系统设计文档》
+- **当前阶段**：架构设计阶段，已产出《Linux 网络流量监控系统设计文档》https://github.com/wukiQAQ/Linux-network-control/blob/main/docs/%E4%BA%A7%E5%93%81%E8%AE%BE%E8%AE%A1%E6%96%87%E6%A1%A3.md
 - **技术方向**：Go 语言，AF_PACKET/libpcap 采集，分层模块化架构（采集 → 解析 → 聚合 → 存储 → API → 展示 → 告警）
 
 ## 强制工作流规则
