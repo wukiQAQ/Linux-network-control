@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linux 网络流量监控 · 界面演示</title>
+<style>
+  :root {
+    --bg: #0b1220;
+    --card: #111a2e;
+    --card2: #16213a;
+    --border: #223052;
+    --text: #e6edfb;
+    --muted: #8ea0c4;
+    --accent: #3b82f6;
+    --in: #38bdf8;      /* 入站 */
+    --out: #f472b6;     /* 出站 */
+    --ok: #34d399;
+    --warn: #fbbf24;
+    --err: #f87171;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+    font-size: 14px;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 24px; border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, #0e1730, #0b1220);
+    position: sticky; top: 0; z-index: 5;
+  }
+  .logo { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 600; }
+  .logo .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .logo .tag {
+    font-size: 12px; font-weight: 400; color: var(--muted);
+    border: 1px solid var(--border); padding: 2px 8px; border-radius: 20px;
+  }
+  .header-right { display: flex; align-items: center; gap: 14px; color: var(--muted); font-size: 13px; }
+  .live { color: var(--ok); display: flex; align-items: center; gap: 6px; }
+  .live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); animation: pulse 1.4s infinite; }
+  @keyframes pulse { 0%,100% {opacity: 1;} 50% {opacity: .35;} }
+  main { max-width: 1280px; margin: 0 auto; padding: 20px 24px 60px; }
+
+  /* 丢包提示横幅 */
+  #dropBanner {
+    display: none; align-items: center; gap: 10px;
+    background: rgba(248,113,113,.12); border: 1px solid rgba(248,113,113,.5);
+    color: #fecaca; padding: 10px 16px; border-radius: 10px; margin-bottom: 16px;
+    font-size: 13px;
+  }
+  #dropBanner.show { display: flex; }
+  #dropBanner b { color: #fff; }
+  #dropBanner button { margin-left: auto; background: none; border: none; color: #fecaca; cursor: pointer; font-size: 16px; }
+
+  /* KPI 卡片 */
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 16px; }
+  .kpi { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+  .kpi .label { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  .kpi .value { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .kpi .sub { color: var(--muted); font-size: 12px; margin-top: 6px; display: flex; gap: 14px; font-variant-numeric: tabular-nums; }
+  .kpi .sub .up { color: var(--in); }
+  .kpi .sub .down { color: var(--out); }
+  #healthBadge { font-size: 12px; padding: 3px 10px; border-radius: 20px; display: inline-block; margin-top: 4px; }
+  #healthBadge.ok { background: rgba(52,211,153,.15); color: var(--ok); }
+  #healthBadge.warn { background: rgba(251,191,36,.15); color: var(--warn); }
+
+  /* 卡片通用 */
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 16px; }
+  .card-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+  }
+  .card-head h2 { font-size: 14px; font-weight: 600; }
+  .seg { display: flex; background: var(--card2); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .seg button {
+    background: none; border: none; color: var(--muted); padding: 5px 14px;
+    cursor: pointer; font-size: 12px;
+  }
+  .seg button.active { background: var(--accent); color: #fff; }
+
+  /* 图表 */
+  #trafficChart { width: 100%; height: 260px; display: block; padding: 10px 4px 0; }
+  .legend { display: flex; gap: 18px; padding: 0 16px 12px; color: var(--muted); font-size: 12px; align-items: center; }
+  .legend i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+  .legend .stat { margin-left: auto; color: var(--text); font-variant-numeric: tabular-nums; }
+
+  /* Tab */
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+  .tabs button {
+    background: none; border: 1px solid var(--border); color: var(--muted);
+    padding: 8px 20px; border-radius: 8px 8px 0 0; cursor: pointer; font-size: 14px;
+  }
+  .tabs button.active { background: var(--card); color: var(--text); border-bottom-color: var(--card); }
+  .tab-body { display: none; }
+  .tab-body.active { display: block; }
+
+  /* 筛选栏 */
+  .filters { display: flex; flex-wrap: wrap; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--border); align-items: center; }
+  .filters input, .filters select {
+    background: var(--card2); border: 1px solid var(--border); color: var(--text);
+    padding: 7px 10px; border-radius: 8px; font-size: 13px; outline: none;
+  }
+  .filters input:focus, .filters select:focus { border-color: var(--accent); }
+  .btn {
+    background: var(--accent); border: none; color: #fff; padding: 7px 18px;
+    border-radius: 8px; cursor: pointer; font-size: 13px;
+  }
+  .btn.ghost { background: var(--card2); color: var(--muted); border: 1px solid var(--border); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* 表格 */
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  th { color: var(--muted); font-weight: 500; cursor: pointer; user-select: none; white-space: nowrap; }
+  th:hover { color: var(--text); }
+  th .arrow { font-size: 10px; }
+  td .proto {
+    display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 12px;
+  }
+  .proto.tcp { background: rgba(56,189,248,.15); color: var(--in); }
+  .proto.udp { background: rgba(244,114,182,.15); color: var(--out); }
+  .proto.icmp { background: rgba(251,191,36,.15); color: var(--warn); }
+  .ip-in { color: var(--in); } .ip-out { color: var(--out); }
+  .arrow-flow { color: var(--muted); padding: 0 6px; }
+  .muted { color: var(--muted); }
+
+  .pager { display: flex; align-items: center; gap: 12px; padding: 12px 16px; color: var(--muted); font-size: 13px; }
+  .pager .spacer { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+  .table-wrap { overflow-x: auto; min-height: 320px; }
+  .loading { color: var(--muted); text-align: center; padding: 40px 0; font-size: 13px; }
+  #tableBody .empty { text-align: center; color: var(--muted); padding: 40px 0; }
+
+  /* 健康页 */
+  .health-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; padding: 16px; }
+  .h-card { background: var(--card2); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .h-card .label { color: var(--muted); font-size: 12px; }
+  .h-card .value { font-size: 20px; font-weight: 700; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .health-actions { display: flex; gap: 10px; padding: 0 16px 16px; align-items: center; }
+  .health-actions .hint { color: var(--muted); font-size: 12px; }
+  #healthLog { padding: 0 16px 16px; }
+  #healthLog div { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px dashed var(--border); font-size: 13px; color: var(--muted); }
+  #healthLog .warn-text { color: #fecaca; }
+
+  @media (max-width: 900px) {
+    .kpis { grid-template-columns: repeat(2, 1fr); }
+    .health-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <span class="dot"></span>
+    Linux 网络流量监控
+    <span class="tag">界面演示 · 模拟数据</span>
+  </div>
+  <div class="header-right">
+    <span id="clock"></span>
+    <span class="live">采集运行中</span>
+  </div>
+</header>
+
+<main>
+  <!-- 丢包提示横幅：模拟系统自身健康告警 -->
+  <div id="dropBanner">
+    ⚠️ 检测到抓包丢包：<b id="dropText">0</b>
+    <button onclick="dismissDrop()">✕</button>
+  </div>
+
+  <!-- KPI 卡片 -->
+  <section class="kpis">
+    <div class="kpi">
+      <div class="label">当前总带宽</div>
+      <div class="value" id="kpiBw">--</div>
+      <div class="sub"><span class="up">↑ 入 <b id="kpiIn">--</b></span><span class="down">↓ 出 <b id="kpiOut">--</b></span></div>
+    </div>
+    <div class="kpi">
+      <div class="label">包速率</div>
+      <div class="value" id="kpiPps">--</div>
+      <div class="sub">平均 <span id="kpiPpsAvg">--</span></div>
+    </div>
+    <div class="kpi">
+      <div class="label">并发连接</div>
+      <div class="value" id="kpiConn">--</div>
+      <div class="sub">新建 <span id="kpiNew">--</span>/s</div>
+    </div>
+    <div class="kpi">
+      <div class="label">系统状态</div>
+      <div><span id="healthBadge" class="ok">健康</span></div>
+      <div class="sub">运行 <span id="kpiUptime">--</span></div>
+    </div>
+  </section>
+
+  <!-- 流量图表 -->
+  <div class="card">
+    <div class="card-head">
+      <h2>流量趋势</h2>
+      <div class="seg" id="rangeSeg">
+        <button class="active" data-range="realtime">实时</button>
+        <button data-range="1h">近 1 小时</button>
+        <button data-range="24h">近 24 小时</button>
+      </div>
+    </div>
+    <svg id="trafficChart" viewBox="0 0 1000 260" preserveAspectRatio="none"></svg>
+    <div class="legend">
+      <span><i style="background:var(--in)"></i>入站</span>
+      <span><i style="background:var(--out)"></i>出站</span>
+      <span class="stat" id="chartStat"></span>
+    </div>
+  </div>
+
+  <!-- Tab 导航 -->
+  <div class="tabs">
+    <button class="active" data-tab="sessions">会话明细</button>
+    <button data-tab="health">系统健康</button>
+  </div>
+
+  <!-- 会话明细 -->
+  <div class="card tab-body active" id="tab-sessions">
+    <div class="filters">
+      <input id="fIp" placeholder="IP 关键词，如 10.0.0.8" style="width:220px">
+      <select id="fProto">
+        <option value="">全部协议</option>
+        <option value="tcp">TCP</option>
+        <option value="udp">UDP</option>
+        <option value="icmp">ICMP</option>
+      </select>
+      <select id="fPort">
+        <option value="">全部端口</option>
+        <option value="443">443 (HTTPS)</option>
+        <option value="80">80 (HTTP)</option>
+        <option value="53">53 (DNS)</option>
+        <option value="22">22 (SSH)</option>
+        <option value="3306">3306 (MySQL)</option>
+      </select>
+      <button class="btn" id="btnSearch">查询</button>
+      <button class="btn ghost" id="btnReset">重置</button>
+      <span class="muted" style="margin-left:auto" id="queryHint">约 0 条匹配记录</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th data-key="time">开始时间 <span class="arrow"></span></th>
+            <th data-key="srcIp">源地址 <span class="arrow"></span></th>
+            <th></th>
+            <th data-key="dstIp">目的地址 <span class="arrow"></span></th>
+            <th data-key="proto">协议 <span class="arrow"></span></th>
+            <th data-key="packets">包数 <span class="arrow"></span></th>
+            <th data-key="bytes">流量 <span class="arrow"></span></th>
+            <th data-key="duration">持续时长 <span class="arrow"></span></th>
+          </tr>
+        </thead>
+        <tbody id="tableBody"><tr><td colspan="8" class="loading">加载中…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="pager">
+      <span>每页 10 条</span>
+      <span class="spacer">
+        <button class="btn ghost" id="btnPrev">上一页</button>
+        <span id="pageInfo" class="muted">第 1 / 1 页</span>
+        <button class="btn ghost" id="btnNext">下一页</button>
+      </span>
+    </div>
+  </div>
+
+  <!-- 系统健康 -->
+  <div class="card tab-body" id="tab-health">
+    <div class="health-grid">
+      <div class="h-card"><div class="label">运行时长</div><div class="value" id="hUptime">--</div></div>
+      <div class="h-card"><div class="label">收包总数</div><div class="value" id="hRecv">--</div></div>
+      <div class="h-card"><div class="label">丢包总数</div><div class="value" id="hDrop" style="color:var(--warn)">--</div></div>
+      <div class="h-card"><div class="label">丢包率</div><div class="value" id="hDropRate">--</div></div>
+      <div class="h-card"><div class="label">流表大小（活跃会话）</div><div class="value" id="hFlow">--</div></div>
+      <div class="h-card"><div class="label">抓包缓冲占用</div><div class="value" id="hBuf">--</div></div>
+      <div class="h-card"><div class="label">进程 CPU（模拟）</div><div class="value" id="hCpu">--</div></div>
+      <div class="h-card"><div class="label">进程内存（模拟）</div><div class="value" id="hMem">--</div></div>
+    </div>
+    <div class="health-actions">
+      <button class="btn" id="btnSimDrop">模拟一次抓包丢包</button>
+      <span class="hint">点击后观察顶部告警横幅与下方日志——对应 MVP 的"自身健康"能力。</span>
+    </div>
+    <div id="healthLog">
+      <div>[启动] 采集器已启动，等待数据…</div>
+    </div>
+  </div>
+</main>
+
+<script>
+/* ============================================================
+ * Linux 网络流量监控系统 · 界面演示（纯前端，模拟数据）
+ * 说明：本文件仅用于评估界面与操作流程。所有数据由 JS 随机生成，
+ *       不涉及真实抓包。代码中用 "Mock API" 注释标注的位置，
+ *       未来将替换为真实 REST 接口（/api/v1/...）。
+ * ============================================================ */
+
+/* ---------- 工具函数 ---------- */
+function fmtBits(v) {
+  if (v >= 1e9) return (v/1e9).toFixed(2) + ' Gbps';
+  if (v >= 1e6) return (v/1e6).toFixed(1) + ' Mbps';
+  if (v >= 1e3) return (v/1e3).toFixed(1) + ' Kbps';
+  return Math.round(v) + ' bps';
+}
+function fmtBytes(v) {
+  if (v >= 1e9) return (v/1e9).toFixed(2) + ' GB';
+  if (v >= 1e6) return (v/1e6).toFixed(1) + ' MB';
+  if (v >= 1e3) return (v/1e3).toFixed(0) + ' KB';
+  return Math.round(v) + ' B';
+}
+function fmtNum(v) { return v.toLocaleString('en-US'); }
+function fmtTime(ts) {
+  const d = new Date(ts);
+  const p = n => String(n).padStart(2, '0');
+  return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+function rand(min, max) { return min + Math.random() * (max - min); }
+function randInt(min, max) { return Math.floor(rand(min, max + 1)); }
+function pick(arr) { return arr[randInt(0, arr.length - 1)]; }
+
+/* ---------- 全局状态 ---------- */
+const state = {
+  startTs: Date.now(),          // 模拟"采集器启动"时间
+  range: 'realtime',            // realtime | 1h | 24h
+  realBuf: [],                  // 实时 1s 采样缓冲：入站（最近 60 点）
+  realBufOut: [],               // 实时 1s 采样缓冲：出站（最近 60 点）
+  fakeHist: null,               // 模拟历史序列
+  health: {
+    recvPackets: 0,             // 收包总数
+    dropPackets: 0,             // 丢包总数
+    bufferUsed: 34,             // 抓包缓冲占用 %
+    lastDropTs: 0
+  },
+  sessions: [],                 // 模拟会话数据（全量）
+  filter: { ip: '', proto: '', port: '' },
+  page: 1, pageSize: 10,
+  sort: { key: 'time', dir: -1 },
+  conns: 0,
+  newConnsPerSec: 0,
+  sortOrder: { time: -1, srcIp: 1, dstIp: 1, proto: 1, packets: -1, bytes: -1, duration: -1 }
+};
+
+/* ---------- Mock API：模拟后端接口（未来替换为真实 REST 调用） ---------- */
+function mockApi(delay, fn) {
+  return new Promise(resolve => setTimeout(() => resolve(fn()), delay));
+}
+
+// GET /api/v1/traffic/now —— 当前指标快照
+function fetchNow() {
+  return mockApi(120, () => {
+    const inMbps = rand(180, 720);       // 模拟入站带宽 Mbps
+    const outMbps = rand(60, 320);       // 模拟出站带宽 Mbps
+    return {
+      inBits: inMbps * 1e6,
+      outBits: outMbps * 1e6,
+      pps: randInt(4000, 26000),
+      conns: state.conns,
+      newConns: state.newConnsPerSec
+    };
+  });
+}
+
+// GET /api/v1/sessions —— 会话列表（模拟数据一次生成，查询走本地过滤）
+function fetchSessions() {
+  return mockApi(400, () => state.sessions);
+}
+
+// GET /api/v1/health —— 系统自身健康
+function fetchHealth() {
+  return mockApi(150, () => ({
+    uptime: Date.now() - state.startTs,
+    recv: state.health.recvPackets,
+    drop: state.health.dropPackets,
+    dropRate: state.health.recvPackets ? state.health.dropPackets / state.health.recvPackets : 0,
+    flowSize: state.conns,
+    buffer: state.health.bufferUsed,
+    cpu: randInt(4, 18),
+    mem: randInt(35, 90)
+  }));
+}
+
+/* ---------- 模拟会话数据生成 ---------- */
+const INTRA_NETS = ['10.0.0.', '10.0.1.', '172.16.5.', '192.168.1.'];
+const PUB_NETS = [
+  '104.18.28.', '142.250.4.', '140.82.112.', '151.101.1.', '20.205.243.',
+  '47.98.60.', '220.181.38.', '183.60.83.', '59.36.120.', '101.226.103.'
+];
+const COMMON_PORTS = [80, 443, 53, 22, 3306, 6379, 8080, 9000, 3389, 25];
+
+function genIp(net) { return net + randInt(2, 254); }
+function randInternalIp() { return genIp(pick(INTRA_NETS)); }
+function randPublicIp() { return genIp(pick(PUB_NETS)); }
+
+function genSession(ts) {
+  const proto = Math.random() < 0.55 ? 'tcp' : (Math.random() < 0.75 ? 'udp' : 'icmp');
+  const srcIsInternal = Math.random() < 0.85;
+  const src = srcIsInternal ? randInternalIp() : randPublicIp();
+  const dst = srcIsInternal ? randPublicIp() : randInternalIp();
+  let srcPort = 0, dstPort = 0;
+  if (proto === 'tcp' || proto === 'udp') {
+    srcPort = randInt(10000, 65000);
+    dstPort = Math.random() < 0.8 ? pick(COMMON_PORTS) : randInt(1000, 9999);
+    if (!srcIsInternal) { const t = srcPort; srcPort = dstPort; dstPort = t; }
+  }
+  const pkts = randInt(8, 90000);
+  const bytes = pkts * rand(60, 1400);
+  return {
+    id: 's' + ts + randInt(1000, 9999),
+    time: ts,
+    srcIp: src, srcPort: srcPort,
+    dstIp: dst, dstPort: dstPort,
+    proto: proto,
+    packets: pkts,
+    bytes: Math.round(bytes),
+    duration: randInt(1, 300) + rand(0, 0.99)
+  };
+}
+
+function genSessions() {
+  const list = [];
+  const now = Date.now();
+  for (let i = 0; i < 230; i++) {
+    const ts = now - randInt(0, 7200) * 1000;   // 最近 2 小时内的会话
+    list.push(genSession(ts));
+  }
+  return list.sort((a, b) => b.time - a.time);
+}
+
+/* ---------- 图表绘制（轻量 SVG） ---------- */
+function buildPath(points, maxV) {
+  const W = 1000, H = 260, PAD = 10;
+  const n = points.length;
+  if (!n) return '';
+  const x = i => (i / Math.max(1, n - 1)) * W;
+  const y = v => PAD + (1 - Math.min(v / maxV, 1)) * (H - PAD * 2);
+  return points.map((p, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(p).toFixed(1)).join('');
+}
+
+function drawChart(labels, inSeries, outSeries) {
+  const svg = document.getElementById('trafficChart');
+  const maxV = Math.max(1, ...inSeries, ...outSeries) * 1.15;
+  const inPath = buildPath(inSeries, maxV);
+  const outPath = buildPath(outSeries, maxV);
+  svg.innerHTML =
+    '<defs>' +
+      '<linearGradient id="gIn" x1="0" y1="0" x2="0" y2="1">' +
+        '<stop offset="0%" stop-color="#38bdf8" stop-opacity=".28"/>' +
+        '<stop offset="100%" stop-color="#38bdf8" stop-opacity="0"/>' +
+      '</linearGradient>' +
+      '<linearGradient id="gOut" x1="0" y1="0" x2="0" y2="1">' +
+        '<stop offset="0%" stop-color="#f472b6" stop-opacity=".25"/>' +
+        '<stop offset="100%" stop-color="#f472b6" stop-opacity="0"/>' +
+      '</linearGradient>' +
+    '</defs>' +
+    (inPath ? '<path d="' + inPath + ' L1000 260 L0 260 Z" fill="url(#gIn)"/>' +
+              '<path d="' + inPath + '" fill="none" stroke="#38bdf8" stroke-width="2"/>' : '') +
+    (outPath ? '<path d="' + outPath + ' L1000 260 L0 260 Z" fill="url(#gOut)"/>' +
+               '<path d="' + outPath + '" fill="none" stroke="#f472b6" stroke-width="2"/>' : '');
+  const stat = document.getElementById('chartStat');
+  const curIn = inSeries[inSeries.length - 1] || 0;
+  const curOut = outSeries[outSeries.length - 1] || 0;
+  stat.textContent = '当前 入站 ' + fmtBits(curIn) + ' / 出站 ' + fmtBits(curOut) +
+    '　·　峰值 ' + fmtBits(maxV / 1.15);
+}
+
+/* ---------- 实时数据流（对应采集 → 聚合 → 推送） ---------- */
+function pushRealSample(inBits, outBits) {
+  state.realBuf.push(inBits);
+  state.realBufOut.push(outBits);
+  if (state.realBuf.length > 60) state.realBuf.shift();
+  if (state.realBufOut.length > 60) state.realBufOut.shift();
+}
+
+async function tickRealtime() {
+  // 模拟新连接数与活跃连接漂移
+  state.newConnsPerSec = randInt(3, 60);
+  state.conns = Math.max(10, Math.round(state.conns + (randInt(-8, 12))));
+
+  const now = await fetchNow();
+  state.health.recvPackets += randInt(3000, 20000);      // 模拟收包
+  pushRealSample(now.inBits, now.outBits);
+
+  document.getElementById('kpiBw').textContent = fmtBits(now.inBits + now.outBits);
+  document.getElementById('kpiIn').textContent = fmtBits(now.inBits);
+  document.getElementById('kpiOut').textContent = fmtBits(now.outBits);
+  document.getElementById('kpiPps').textContent = fmtNum(now.pps) + ' pps';
+  document.getElementById('kpiConn').textContent = fmtNum(now.conns);
+  document.getElementById('kpiNew').textContent = now.newConns;
+  document.getElementById('kpiUptime').textContent = fmtUptime(Date.now() - state.startTs);
+
+  if (state.range === 'realtime') {
+    drawChart(null, state.realBuf, state.realBufOut);
+    document.getElementById('chartStat').textContent =
+      '当前 入站 ' + fmtBits(now.inBits) + ' / 出站 ' + fmtBits(now.outBits) + '　·　近 60 秒';
+  }
+}
+
+/* ---------- 历史范围（模拟历史查询 API） ---------- */
+function genHistory(stepMs, count, baseIn, baseOut) {
+  const arr = [];
+  let t = Date.now() - stepMs * count;
+  for (let i = 0; i < count; i++) {
+    t += stepMs;
+    const wave = 0.5 + 0.5 * Math.sin(i / (count / 6));
+    arr.push({
+      t: t,
+      in: (baseIn * (0.4 + wave * 0.9) * rand(0.82, 1.18)),
+      out: (baseOut * (0.4 + wave * 0.7) * rand(0.8, 1.2))
+    });
+  }
+  return arr;
+}
+
+function showHistory(range) {
+  const step = range === '1h' ? 5000 : 60000;            // 5s / 60s 粒度
+  const count = range === '1h' ? 720 : 1440;
+  const hist = genHistory(step, count, rand(200, 400) * 1e6, rand(80, 200) * 1e6);
+  state.fakeHist = hist;
+  state.histStep = step;
+  drawChart(null, hist.map(p => p.in), hist.map(p => p.out));
+  const avgIn = hist.reduce((s, p) => s + p.in, 0) / hist.length;
+  const avgOut = hist.reduce((s, p) => s + p.out, 0) / hist.length;
+  document.getElementById('chartStat').textContent =
+    (range === '1h' ? '近 1 小时' : '近 24 小时') +
+    '　·　平均 入站 ' + fmtBits(avgIn) + ' / 出站 ' + fmtBits(avgOut) +
+    '　·　' + fmtNum(count) + ' 个采样点（模拟）';
+}
+
+/* ---------- 会话列表：过滤 / 排序 / 分页 ---------- */
+function applyFilter() {
+  const ip = state.filter.ip.trim().toLowerCase();
+  const proto = state.filter.proto;
+  const port = state.filter.port;
+  return state.sessions.filter(s => {
+    if (ip && !(s.srcIp.includes(ip) || s.dstIp.includes(ip))) return false;
+    if (proto && s.proto !== proto) return false;
+    if (port && String(s.srcPort) !== port && String(s.dstPort) !== port) return false;
+    return true;
+  });
+}
+
+async function renderSessions() {
+  const body = document.getElementById('tableBody');
+  body.innerHTML = '<tr><td colspan="8" class="loading">查询中…</td></tr>';
+  await mockApi(320, () => {});   // 模拟网络/查询延迟
+
+  let list = applyFilter();
+  const { key, dir } = state.sort;
+  list = list.slice().sort((a, b) => {
+    const av = typeof a[key] === 'string' ? a[key].localeCompare(b[key]) : (a[key] - b[key]);
+    return av * dir;
+  });
+
+  document.getElementById('queryHint').textContent = '约 ' + list.length + ' 条匹配记录';
+  const pages = Math.max(1, Math.ceil(list.length / state.pageSize));
+  state.page = Math.min(state.page, pages);
+  const start = (state.page - 1) * state.pageSize;
+  const rows = list.slice(start, start + state.pageSize);
+
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="8" class="empty">没有匹配的会话记录，试试调整筛选条件</td></tr>';
+  } else {
+    body.innerHTML = rows.map(s => {
+      const dir = s.srcIp.startsWith('10.') || s.srcIp.startsWith('172.') || s.srcIp.startsWith('192.168.') ? 'out' : 'in';
+      return '<tr>' +
+        '<td class="muted">' + fmtTime(s.time) + '</td>' +
+        '<td><span class="' + (dir === 'out' ? 'ip-out' : 'ip-in') + '">' + s.srcIp + '</span>' +
+          (s.srcPort ? '<span class="muted">:' + s.srcPort + '</span>' : '') + '</td>' +
+        '<td class="arrow-flow">→</td>' +
+        '<td><span class="' + (dir === 'out' ? 'ip-in' : 'ip-out') + '">' + s.dstIp + '</span>' +
+          (s.dstPort ? '<span class="muted">:' + s.dstPort + '</span>' : '') + '</td>' +
+        '<td><span class="proto ' + s.proto + '">' + s.proto.toUpperCase() + '</span></td>' +
+        '<td>' + fmtNum(s.packets) + '</td>' +
+        '<td>' + fmtBytes(s.bytes) + '</td>' +
+        '<td class="muted">' + s.duration.toFixed(0) + 's</td>' +
+      '</tr>';
+    }).join('');
+  }
+  document.getElementById('pageInfo').textContent = '第 ' + state.page + ' / ' + pages + ' 页';
+  document.getElementById('btnPrev').disabled = state.page <= 1;
+  document.getElementById('btnNext').disabled = state.page >= pages;
+}
+
+/* ---------- 系统健康 ---------- */
+function fmtUptime(ms) {
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  const p = n => String(n).padStart(2, '0');
+  return p(h) + ':' + p(m) + ':' + p(sec);
+}
+
+async function renderHealth() {
+  const h = await fetchHealth();
+  document.getElementById('hUptime').textContent = fmtUptime(h.uptime);
+  document.getElementById('hRecv').textContent = fmtNum(h.recv);
+  document.getElementById('hDrop').textContent = fmtNum(h.drop);
+  document.getElementById('hDropRate').textContent = (h.dropRate * 100).toFixed(4) + ' %';
+  document.getElementById('hFlow').textContent = fmtNum(h.flowSize);
+  document.getElementById('hBuf').textContent = h.buffer + ' %';
+  document.getElementById('hCpu').textContent = h.cpu + ' %';
+  document.getElementById('hMem').textContent = h.mem + ' MB';
+  updateHealthBadge();
+}
+
+function updateHealthBadge() {
+  const badge = document.getElementById('healthBadge');
+  const recv = state.health.recvPackets;
+  const rate = recv ? state.health.dropPackets / recv : 0;
+  if (rate > 0.0005 || state.health.dropPackets > 0) {
+    badge.textContent = '存在丢包';
+    badge.className = 'warn';
+  } else {
+    badge.textContent = '健康';
+    badge.className = 'ok';
+  }
+}
+
+function addDrop(dropCount) {
+  state.health.dropPackets += dropCount;
+  state.health.lastDropTs = Date.now();
+  const text = document.getElementById('dropText');
+  text.textContent = fmtNum(state.health.dropPackets) + ' 个包（累计）' +
+    '，最近一次 ' + dropCount + ' 个包（' + fmtTime(Date.now()) + '）';
+  document.getElementById('dropBanner').classList.add('show');
+  const log = document.getElementById('healthLog');
+  const div = document.createElement('div');
+  div.className = 'warn-text';
+  div.textContent = '[' + fmtTime(Date.now()) + '] ⚠️ 检测到抓包丢包：' + dropCount + ' 个包，建议调大抓包缓冲或减少过滤负担';
+  log.insertBefore(div, log.firstChild);
+  updateHealthBadge();
+}
+
+function dismissDrop() {
+  document.getElementById('dropBanner').classList.remove('show');
+}
+
+/* ---------- 随机自动丢包（演示用，小概率） ---------- */
+function maybeAutoDrop() {
+  if (Math.random() < 0.07) addDrop(randInt(2, 40));
+}
+
+/* ---------- 时钟 ---------- */
+function tickClock() {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  document.getElementById('clock').textContent =
+    d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+    p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+
+/* ---------- 事件绑定与初始化 ---------- */
+function bindEvents() {
+  // 范围切换
+  document.querySelectorAll('#rangeSeg button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#rangeSeg button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.range = btn.dataset.range;
+      if (state.range === 'realtime') tickRealtime();
+      else showHistory(state.range);
+    });
+  });
+
+  // Tab 切换
+  document.querySelectorAll('.tabs button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.querySelectorAll('.tab-body').forEach(t => t.classList.remove('active'));
+      document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+      if (btn.dataset.tab === 'sessions') renderSessions();
+      if (btn.dataset.tab === 'health') renderHealth();
+    });
+  });
+
+  // 会话筛选
+  document.getElementById('btnSearch').addEventListener('click', () => {
+    state.filter.ip = document.getElementById('fIp').value;
+    state.filter.proto = document.getElementById('fProto').value;
+    state.filter.port = document.getElementById('fPort').value;
+    state.page = 1;
+    renderSessions();
+  });
+  document.getElementById('btnReset').addEventListener('click', () => {
+    document.getElementById('fIp').value = '';
+    document.getElementById('fProto').value = '';
+    document.getElementById('fPort').value = '';
+    state.filter = { ip: '', proto: '', port: '' };
+    state.page = 1;
+    renderSessions();
+  });
+  document.getElementById('fIp').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('btnSearch').click();
+  });
+
+  // 排序
+  document.querySelectorAll('th[data-key]').forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.key;
+      state.sort.dir = -state.sortOrder[key];
+      state.sortOrder[key] = state.sort.dir;
+      state.sort.key = key;
+      document.querySelectorAll('th[data-key] .arrow').forEach(a => a.textContent = '');
+      th.querySelector('.arrow').textContent = state.sort.dir === -1 ? '▼' : '▲';
+      renderSessions();
+    });
+  });
+
+  // 分页
+  document.getElementById('btnPrev').addEventListener('click', () => { if (state.page > 1) { state.page--; renderSessions(); } });
+  document.getElementById('btnNext').addEventListener('click', () => { state.page++; renderSessions(); });
+
+  // 健康页：模拟丢包
+  document.getElementById('btnSimDrop').addEventListener('click', () => {
+    addDrop(randInt(50, 500));
+    renderHealth();
+  });
+}
+
+async function init() {
+  state.sessions = genSessions();
+  state.conns = randInt(600, 1800);
+  state.realBuf = [];
+  state.realBufOut = [];
+  bindEvents();
+  tickClock();
+  setInterval(tickClock, 1000);
+  await renderSessions();
+  renderHealth();
+  tickRealtime();
+  setInterval(() => { tickRealtime(); maybeAutoDrop(); }, 1000);
+}
+
+init();
+</script>
+</body>
+</html>
