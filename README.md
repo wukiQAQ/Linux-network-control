@@ -1,5 +1,15 @@
 # Linux 网络流量监控系统（Linux Network Control）
 
+
+
+:注这是我作为初学者的第一个项目如果有人可以指点一下那么我会非常感谢你的大部分代码使用Codex生成的是作为一个练手项目来进行测试的Vibe Coding
+:Note, this is my first project as a beginner. I would be very grateful if anyone could give me some guidance.
+ Most of the code was generated using Codex and is used as a practice project to test. Vibe Coding.
+
+
+
+
+
 运行于 Linux 平台的网络流量监控系统，用于对网络流量进行持续、实时的监测与分析，支持会话级流量查看、指标聚合与异常告警。
 
 ## 项目状态
