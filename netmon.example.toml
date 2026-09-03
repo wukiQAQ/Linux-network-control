@@ -1,0 +1,19 @@
+# Linux 网络流量监控系统 配置示例
+
+[core]
+machine_id = "host-1"      # 机器标识（多机对比预留）
+source = "synthetic"       # 数据源：synthetic | replay | live
+tick_ms = 1000             # 指标聚合周期（毫秒）
+
+[capture]
+iface = "eth0"             # live 模式监控的网卡
+filter = ""                # BPF 过滤表达式（预留）
+replay_file = ""           # source=replay 时的 pcap 文件路径
+pps = 200                  # synthetic 数据源速率（包/秒）
+
+[storage]
+data_dir = "data"          # 数据目录（指标与会话持久化）
+retention_hours = 24       # 数据保留时长（小时）
+
+[api]
+listen = ":8080"           # HTTP 监听地址
