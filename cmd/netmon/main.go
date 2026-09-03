@@ -46,7 +46,12 @@ func main() {
 
 	table := flow.NewTable(30*time.Second, 5*time.Minute, nil)
 	agg := aggregator.New(3600)
-	store, err := storage.OpenFileStore(cfg.DataDir, cfg.Retention)
+	var store storage.Backend
+	if cfg.Storage == "file" {
+		store, err = storage.OpenFileStore(cfg.DataDir, cfg.Retention)
+	} else {
+		store, err = storage.OpenSQLiteStore(cfg.SQLitePath, cfg.Retention)
+	}
 	if err != nil {
 		log.Fatalf("[storage] 存储初始化失败: %v", err)
 	}

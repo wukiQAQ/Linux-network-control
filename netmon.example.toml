@@ -12,7 +12,9 @@ replay_file = ""           # source=replay 时的 pcap 文件路径
 pps = 200                  # synthetic 数据源速率（包/秒）
 
 [storage]
-data_dir = "data"          # 数据目录（指标与会话持久化）
+data_dir = "data"          # file 后端的数据目录
+storage = "sqlite"         # 存储后端：sqlite | file
+sqlite_path = "data/netmon.db"  # sqlite 数据库文件
 retention_hours = 24       # 数据保留时长（小时）
 
 [api]

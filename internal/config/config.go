@@ -22,6 +22,8 @@ type Config struct {
 	Pps        int           // synthetic 数据源每秒产生包数
 	Tick       time.Duration // 指标聚合周期
 	DataDir    string        // 数据存储目录
+	Storage    string        // 存储后端：sqlite | file
+	SQLitePath string        // sqlite 数据库文件路径
 	Retention  time.Duration // 数据保留时长
 	Listen     string        // HTTP 监听地址
 }
@@ -35,6 +37,8 @@ func Default() *Config {
 		Pps:        200,
 		Tick:       time.Second,
 		DataDir:    "data",
+		Storage:    "sqlite",
+		SQLitePath: "data/netmon.db",
 		Retention:  24 * time.Hour,
 		Listen:     ":8080",
 	}
@@ -111,6 +115,12 @@ func (c *Config) apply(v map[string]string) {
 	}
 	if s, ok := v["storage.data_dir"]; ok {
 		c.DataDir = s
+	}
+	if s, ok := v["storage.storage"]; ok {
+		c.Storage = s
+	}
+	if s, ok := v["storage.sqlite_path"]; ok {
+		c.SQLitePath = s
 	}
 	if n, ok := v["storage.retention_hours"]; ok {
 		if i, err := strconv.Atoi(n); err == nil && i > 0 {
