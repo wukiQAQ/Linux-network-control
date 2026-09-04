@@ -80,4 +80,5 @@ go vet ./... && go test ./...   # 8 个包全绿（含 SQLite、pcap 回放链�
 - [系统设计文档](docs/网络流量监控系统设计文档.md)：总体架构与模块接口
 - [源码讲解](docs/源码讲解.md)：逐模块实现原理与数据流
 - [V0.2 运行原理与 SQLite 接入](docs/V0.2-运行原理与SQLite接入.md)：V0.2 版本说明
+- [使用指南](docs/使用指南.md)：Windows 演示 / pcap 回放 / CentOS 部署
 - [界面演示](demo/index.html)：模拟数据 Demo（浏览器直接打开）
