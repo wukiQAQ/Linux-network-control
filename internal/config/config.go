@@ -26,6 +26,7 @@ type Config struct {
 	SQLitePath string        // sqlite 数据库文件路径
 	Retention  time.Duration // 数据保留时长
 	Listen     string        // HTTP 监听地址
+	APIToken   string        // 可选 API 访问令牌（Bearer Token），空表示不鉴权
 }
 
 // Default 返回开箱即用的默认配置（synthetic 数据源，便于无网卡环境演示）。
@@ -129,6 +130,9 @@ func (c *Config) apply(v map[string]string) {
 	}
 	if s, ok := v["api.listen"]; ok {
 		c.Listen = s
+	}
+	if s, ok := v["api.token"]; ok {
+		c.APIToken = s
 	}
 }
 

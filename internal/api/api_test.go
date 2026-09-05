@@ -122,3 +122,75 @@ func TestStaticPage(t *testing.T) {
 		t.Error("静态页内容缺失")
 	}
 }
+
+// authTestServer 返回开启 Bearer 令牌鉴权的测试服务。
+func authTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	cfg := config.Default()
+	cfg.APIToken = "test-secret"
+	store, err := storage.OpenFileStore(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agg := aggregator.New(100)
+	table := flow.NewTable(time.Minute, 5*time.Minute, nil)
+	srv := New(cfg, agg, table, store, webui.FS)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(func() { _ = store.Close() })
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func TestAuthRequired(t *testing.T) {
+	ts := authTestServer(t)
+
+	// 无令牌访问 API：401
+	r, err := http.Get(ts.URL + "/api/v1/traffic/now")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.Body.Close()
+	if r.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("无令牌访问 status=%d, want 401", r.StatusCode)
+	}
+
+	// 错误令牌：401
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/traffic/now", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer wrong")
+	r, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.Body.Close()
+	if r.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("错误令牌 status=%d, want 401", r.StatusCode)
+	}
+
+	// 正确令牌：200
+	req, err = http.NewRequest(http.MethodGet, ts.URL+"/api/v1/traffic/now", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer test-secret")
+	r, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("正确令牌 status=%d, want 200", r.StatusCode)
+	}
+
+	// 静态页面仍可匿名访问（不含敏感数据）
+	r2, err := http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2.Body.Close()
+	if r2.StatusCode != http.StatusOK {
+		t.Fatalf("静态页 status=%d, want 200", r2.StatusCode)
+	}
+}

@@ -3,6 +3,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"io/fs"
 	"log"
@@ -32,6 +33,7 @@ func New(cfg *config.Config, agg *aggregator.Agg, table *flow.Table, store stora
 }
 
 // Handler 返回路由。注意：静态页面注册在 "/"，精确 API 路径优先匹配。
+// 配置了 api.token 时，/api/ 前缀请求需要 Authorization: Bearer <token>。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/traffic/now", s.handleNow)
@@ -39,7 +41,33 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/sessions", s.handleSessions)
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	mux.Handle("/", http.FileServerFS(s.ui))
-	return logRequests(mux)
+	h := http.Handler(logRequests(mux))
+	if s.cfg.APIToken != "" {
+		h = requireToken(s.cfg.APIToken, h)
+	}
+	return h
+}
+
+// requireToken 对 /api/ 前缀请求校验 Authorization: Bearer <token>；
+// 静态页面不鉴权（不含敏感数据），令牌为空时整个中间件被跳过。
+// 使用 subtle.ConstantTimeCompare 避免时序侧信道。
+func requireToken(token string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			const prefix = "Bearer "
+			auth := r.Header.Get("Authorization")
+			if !strings.HasPrefix(auth, prefix) {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "缺少 Bearer 令牌"})
+				return
+			}
+			got := strings.TrimSpace(strings.TrimPrefix(auth, prefix))
+			if subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "令牌无效"})
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) statsMap() map[string]any {
@@ -51,18 +79,18 @@ func (s *Server) statsMap() map[string]any {
 	}
 	last := s.agg.Last()
 	return map[string]any{
-		"ts":            time.Now().UTC().Format(time.RFC3339),
-		"bps":           last.Bps,
-		"pps":           last.Pps,
-		"conns":         last.Active,
-		"new_conns":     last.NewConns,
-		"recv_packets":  recv,
-		"drop_packets":  drop,
-		"drop_rate":     rate,
-		"uptime_s":      int64(time.Since(s.started).Seconds()),
-		"flows_active":  s.table.Active(),
-		"machine_id":    s.cfg.MachineID,
-		"source":        s.cfg.Source,
+		"ts":           time.Now().UTC().Format(time.RFC3339),
+		"bps":          last.Bps,
+		"pps":          last.Pps,
+		"conns":        last.Active,
+		"new_conns":    last.NewConns,
+		"recv_packets": recv,
+		"drop_packets": drop,
+		"drop_rate":    rate,
+		"uptime_s":     int64(time.Since(s.started).Seconds()),
+		"flows_active": s.table.Active(),
+		"machine_id":   s.cfg.MachineID,
+		"source":       s.cfg.Source,
 	}
 }
 
