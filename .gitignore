@@ -24,3 +24,10 @@ Thumbs.db
 # 本地构建产物
 /netmon-linux
 /netmon-linux.exe
+# Tauri 客户端
+/client/node_modules/
+/client/dist/
+/client/src-tauri/target/
+/client/src-tauri/gen/
+/client/app-icon.png
+npm-debug.log*
