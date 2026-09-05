@@ -93,7 +93,7 @@ token = "换成你的访问令牌"   # 留空则不鉴权
 ```powershell
 cd "D:\Codex\Linux network control\client"
 npm install
-npx tauri build            # 产物在 client/src-tauri/target/release/bundle/
+npx tauri build            # 产物：client/src-tauri/target/release/netmon-client.exe
 # 开发调试：npm run dev 后另开终端执行 npx tauri dev
 ```
 
