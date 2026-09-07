@@ -187,6 +187,19 @@ function deleteProfile(name) {
   persistProfiles();
 }
 
+// 给异步调用加超时：长时间无响应时自动报错，避免界面一直停留在"连接中"。
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`${label}超时（${Math.round(ms / 1000)} 秒无响应）`)),
+        ms,
+      ),
+    ),
+  ]);
+}
+
 async function connect() {
   const norm = normalizeBaseUrl(form.base);
   if (!norm.ok) {
@@ -198,8 +211,8 @@ async function connect() {
   connError = "";
   notify({ type: "ok", text: "正在连接 " + (form.name || norm.url) + " …" });
   try {
-    await setConnection(norm.url, form.token);
-    await apiGet("/api/v1/traffic/now");
+    await withTimeout(setConnection(norm.url, form.token), 10000, "初始化连接");
+    await withTimeout(apiGet("/api/v1/traffic/now"), 15000, "请求实时数据");
     connected.value = true;
     failCount = 0;
     notify(connectMessage("ok", form.name || norm.url));
