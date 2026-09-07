@@ -1,5 +1,10 @@
 <template>
   <div class="layout">
+    <transition name="toast">
+      <div v-if="toast.show" class="toast" :class="'toast-' + toast.type" @click="toast.show = false">
+        {{ toast.text }}
+      </div>
+    </transition>
     <aside class="sidebar card">
       <div class="brand">
         <div class="logo">N</div>
@@ -23,7 +28,7 @@
       </div>
       <div class="row">
         <button class="btn primary grow" :disabled="connecting" @click="connect">
-          {{ connected ? "重新连接" : "连接" }}
+          {{ connecting ? "连接中…" : connected ? "重新连接" : "连接" }}
         </button>
         <button class="btn" @click="saveProfile">保存</button>
         <button v-if="connected" class="btn danger" @click="disconnect">断开</button>
@@ -103,7 +108,7 @@ import TrafficChart from "./components/TrafficChart.vue";
 import SessionTable from "./components/SessionTable.vue";
 import { apiGet, clearConnection, errText, setConnection } from "./api.js";
 import { fmtDuration, fmtTs, normalizeBaseUrl } from "./format.js";
-import { statusView } from "./status.js";
+import { connectMessage, statusView } from "./status.js";
 
 const STORE_KEY = "netmon.profiles.v1";
 const pageSize = 20;
@@ -125,6 +130,18 @@ let nowTimer = null;
 let historyTimer = null;
 let sessionTimer = null;
 let failCount = 0;
+const toast = reactive({ show: false, type: "ok", text: "" });
+let toastTimer = null;
+function notify(msg) {
+  if (!msg) return;
+  toast.type = msg.type || "err";
+  toast.text = msg.text || "";
+  toast.show = true;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    toast.show = false;
+  }, 4000);
+}
 
 const statusView_ = computed(() =>
   statusView(connected.value, form.name || form.base, connError.value !== ""),
@@ -174,20 +191,25 @@ async function connect() {
   const norm = normalizeBaseUrl(form.base);
   if (!norm.ok) {
     connError = norm.error;
+    notify(connectMessage("warn", form.name, norm.error));
     return;
   }
   connecting.value = true;
   connError = "";
+  notify({ type: "ok", text: "正在连接 " + (form.name || norm.url) + " …" });
   try {
     await setConnection(norm.url, form.token);
     await apiGet("/api/v1/traffic/now");
     connected.value = true;
     failCount = 0;
+    notify(connectMessage("ok", form.name || norm.url));
     startTimers();
     await Promise.all([refreshNow(), refreshHistory(), loadSessions(1)]);
   } catch (e) {
     connected.value = false;
-    connError = "连接失败：" + errText(e);
+    const reason = errText(e);
+    connError = "连接失败：" + reason;
+    notify(connectMessage("err", form.name || norm.url, reason));
     stopTimers();
   } finally {
     connecting.value = false;
@@ -199,6 +221,7 @@ async function disconnect() {
   connected.value = false;
   connError = "";
   failCount = 0;
+  notify({ type: "ok", text: "已断开连接" });
   try {
     await clearConnection();
   } catch {
@@ -271,7 +294,10 @@ watch(
   },
 );
 
-onBeforeUnmount(stopTimers);
+onBeforeUnmount(() => {
+  stopTimers();
+  if (toastTimer) clearTimeout(toastTimer);
+});
 </script>
 
 <style scoped>
@@ -312,6 +338,23 @@ onBeforeUnmount(stopTimers);
 .center { align-items: center; justify-content: center; }
 .welcome { max-width: 520px; text-align: center; padding: 30px; }
 .welcome h2 { margin: 0 0 10px; }
+.toast {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 99;
+  padding: 9px 18px;
+  border-radius: 8px;
+  font-size: 13px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  max-width: 70vw;
+}
+.toast-ok { background: #065f46; color: #d1fae5; border: 1px solid #10b981; }
+.toast-err { background: #7f1d1d; color: #fee2e2; border: 1px solid #ef4444; }
+.toast-enter-active, .toast-leave-active { transition: opacity 0.25s, transform 0.25s; }
+.toast-enter-from, .toast-leave-to { opacity: 0; transform: translateX(-50%) translateY(-6px); }
 .small { font-size: 12px; }
 .info-line { display: flex; gap: 16px; font-size: 12px; flex-wrap: wrap; }
 .sess-head { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
