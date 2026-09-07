@@ -43,8 +43,8 @@
       </div>
 
       <div class="status">
-        <span class="dot big" :class="statusClass"></span>
-        <span>{{ statusText }}</span>
+        <span class="dot big" :class="statusView_.cls"></span>
+        <span>{{ statusView_.text }}</span>
       </div>
     </aside>
 
@@ -97,12 +97,13 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
 import KpiCards from "./components/KpiCards.vue";
 import TrafficChart from "./components/TrafficChart.vue";
 import SessionTable from "./components/SessionTable.vue";
 import { apiGet, clearConnection, errText, setConnection } from "./api.js";
 import { fmtDuration, fmtTs, normalizeBaseUrl } from "./format.js";
+import { statusView } from "./status.js";
 
 const STORE_KEY = "netmon.profiles.v1";
 const pageSize = 20;
@@ -125,12 +126,9 @@ let historyTimer = null;
 let sessionTimer = null;
 let failCount = 0;
 
-const statusClass = connected.value ? "ok" : connError.value ? "bad" : "idle";
-const statusText = connected.value
-  ? "已连接 " + (form.name || form.base)
-  : connError.value
-    ? "连接失败"
-    : "未连接";
+const statusView_ = computed(() =>
+  statusView(connected.value, form.name || form.base, connError.value !== ""),
+);
 
 function loadProfiles() {
   try {
