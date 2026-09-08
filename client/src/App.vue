@@ -8,10 +8,10 @@
 
     <aside class="sidebar card">
       <div class="brand">
-        <div class="logo">N</div>
+        <div class="logo">🐱</div>
         <div>
-          <div class="brand-title">网络流量监控</div>
-          <div class="muted">Windows 客户端 · V0.3</div>
+          <div class="brand-title">MeTD</div>
+          <div class="muted">Linux 流量监控 · V0.4</div>
         </div>
       </div>
 
@@ -50,6 +50,24 @@
         {{ banner.text }}
       </div>
 
+      <div class="settings">
+        <div class="muted section-title">设置</div>
+        <div class="seg">
+          <button
+            class="seg-btn"
+            :class="{ active: theme === 'dark' }"
+            type="button"
+            @click="setTheme('dark')"
+          >🌙 夜间模式</button>
+          <button
+            class="seg-btn"
+            :class="{ active: theme === 'light' }"
+            type="button"
+            @click="setTheme('light')"
+          >☀ 明亮模式</button>
+        </div>
+      </div>
+
       <div class="profiles">
         <div class="muted section-title">已保存的连接</div>
         <div v-if="!profiles.length" class="muted empty">还没有保存的连接</div>
@@ -85,7 +103,7 @@
         <span>最后更新：{{ fmtTs(now.ts) }}</span>
       </div>
       <KpiCards :now="now" />
-      <TrafficChart :points="history" />
+      <TrafficChart :points="history" :theme="theme" :mode="chartMode" @update-mode="setChartMode" />
 
       <div class="card">
         <div class="sess-head">
@@ -114,7 +132,7 @@
       <div class="welcome card">
         <h2>连接你的 Linux 监控端</h2>
         <p class="muted">
-          在左侧填写 Linux 上 netmon 的 IP 与端口（默认 8080），点击"连接"即可实时查看带宽、会话与健康状态。
+          欢迎使用 MeTD。在左侧填写 Linux 上 netmon 的 IP 与端口（默认 8080），点击"连接"即可实时查看带宽、会话与健康状态。
         </p>
         <p class="muted small">提示：地址可填 192.168.1.100:8080，也可带 http:// 前缀；若 Linux 端配置了 api.token 请一并填写。</p>
       </div>
@@ -146,6 +164,8 @@ const sessPage = ref(1);
 const sessLoading = ref(false);
 const sessFilter = reactive({ ip: "", proto: "" });
 const showToken = ref(false);
+const theme = ref(document.documentElement.dataset.theme === "light" ? "light" : "dark");
+const chartMode = ref(loadChartMode());
 const uiLog = ref([]);
 const banner = reactive({ show: false, kind: "busy", text: "" });
 
@@ -190,6 +210,32 @@ function setBanner(kind, text) {
   banner.show = text !== "";
 }
 
+function loadChartMode() {
+  try {
+    const m = localStorage.getItem("netmon.chartMode");
+    return ["line", "area", "bar"].includes(m) ? m : "line";
+  } catch {
+    return "line";
+  }
+}
+function setChartMode(m) {
+  chartMode.value = ["line", "area", "bar"].includes(m) ? m : "line";
+  try {
+    localStorage.setItem("netmon.chartMode", chartMode.value);
+  } catch {
+    // 忽略存储失败
+  }
+}
+function setTheme(t) {
+  theme.value = t === "light" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", theme.value);
+  try {
+    localStorage.setItem("netmon.theme", theme.value);
+  } catch {
+    // 忽略存储失败
+  }
+  pushLog("主题切换：" + (theme.value === "light" ? "明亮模式" : "夜间模式"));
+}
 function loadProfiles() {
   try {
     const raw = localStorage.getItem(STORE_KEY);
@@ -437,6 +483,25 @@ onBeforeUnmount(() => {
 .center { align-items: center; justify-content: center; }
 .welcome { max-width: 540px; text-align: center; padding: 30px; }
 .welcome h2 { margin: 0 0 10px; }
+.settings { display: flex; flex-direction: column; gap: 6px; }
+.seg { display: flex; gap: 6px; }
+.seg-btn {
+  flex: 1;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  transition: all 0.2s;
+}
+.seg-btn:hover { border-color: var(--accent); }
+.seg-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #06222b;
+  font-weight: 600;
+}
 .small { font-size: 12px; }
 .info-line { display: flex; gap: 16px; font-size: 12px; flex-wrap: wrap; }
 .sess-head { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }

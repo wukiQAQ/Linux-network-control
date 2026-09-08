@@ -1,5 +1,6 @@
 :root {
   --bg: #0b1220;
+  --bg-glow: #14233f;
   --panel: #111a2c;
   --panel2: #16213a;
   --line: #243450;
@@ -9,24 +10,41 @@
   --ok: #34d399;
   --warn: #fbbf24;
   --danger: #f87171;
+  color-scheme: dark;
+}
+html[data-theme="light"] {
+  --bg: #eef2f8;
+  --bg-glow: #ffffff;
+  --panel: #ffffff;
+  --panel2: #f1f5f9;
+  --line: #d7e0ea;
+  --text: #0f1b2d;
+  --muted: #5b6b81;
+  --accent: #0891b2;
+  --ok: #059669;
+  --warn: #d97706;
+  --danger: #dc2626;
+  color-scheme: light;
 }
 * { box-sizing: border-box; }
 html, body, #app { height: 100%; margin: 0; }
 body {
   font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
-  background: radial-gradient(1200px 600px at 20% -10%, #14233f 0%, var(--bg) 55%);
+  background: radial-gradient(1200px 600px at 20% -10%, var(--bg-glow) 0%, var(--bg) 55%);
   color: var(--text);
   font-size: 14px;
+  transition: background 0.25s ease, color 0.25s ease;
 }
 button { cursor: pointer; }
 input, select {
-  background: #0d1728;
+  background: var(--panel2);
   border: 1px solid var(--line);
   color: var(--text);
   border-radius: 6px;
   padding: 7px 9px;
   outline: none;
   font-size: 13px;
+  transition: background 0.2s, border-color 0.2s, color 0.2s;
 }
 input:focus, select:focus { border-color: var(--accent); }
 .btn {
@@ -36,6 +54,7 @@ input:focus, select:focus { border-color: var(--accent); }
   border-radius: 6px;
   padding: 7px 12px;
   font-size: 13px;
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
 }
 .btn:hover { border-color: var(--accent); color: var(--accent); }
 .btn.primary { background: #0e7490; border-color: #0e7490; color: #fff; }
@@ -46,7 +65,9 @@ input:focus, select:focus { border-color: var(--accent); }
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 14px;
+  transition: background 0.25s ease, border-color 0.25s ease;
 }
 .muted { color: var(--muted); }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: #26344f; border-radius: 4px; }
+html[data-theme="light"] ::-webkit-scrollbar-thumb { background: #b8c4d4; }

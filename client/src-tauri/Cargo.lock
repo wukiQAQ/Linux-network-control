@@ -1834,6 +1834,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "metd"
+version = "0.4.0"
+dependencies = [
+ "reqwest 0.12.28",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+]
+
+[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1913,16 +1923,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
 dependencies = [
  "jni-sys 0.3.1",
-]
-
-[[package]]
-name = "netmon-client"
-version = "0.3.0"
-dependencies = [
- "reqwest 0.12.28",
- "serde_json",
- "tauri",
- "tauri-build",
 ]
 
 [[package]]

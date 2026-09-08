@@ -12,8 +12,8 @@
 
 ## 项目状态
 
-- **当前阶段**：V0.3（V1 远程桌面客户端已实现：Linux Agent + Windows Tauri 客户端）
-- **技术方向**：Go 语言采集端（AF_PACKET / libpcap）+ Rust/Tauri + Vue 3 桌面客户端
+- **当前阶段**：V0.4（Windows 桌面客户端 MeTD：主题切换 + 多图表样式 + 蓝色小猫图标）
+- **技术方向**：Go 语言采集端（AF_PACKET / libpcap）+ Rust/Tauri + Vue 3 桌面客户端（MeTD）
 - **架构分层**：采集 → 解析 → 聚合 → 存储 → API → 展示（网页 / 桌面客户端）→ 告警
 - **存储**：SQLite（默认，纯 Go 驱动 modernc.org/sqlite），可切换 JSONL（file）
 - **数据源**：synthetic 合成 / pcap 回放 / Linux AF_PACKET 真实抓包
@@ -32,7 +32,7 @@ internal/api/            # REST API /api/v1：now/history/sessions/health（可�
 internal/webui/          # 内嵌网页仪表盘（go:embed）
 internal/app/            # 管道调度：HandlePacket + TickOnce + 主循环
 internal/config/         # TOML 配置加载（含 api.token）
-client/                  # Windows 桌面客户端（Tauri 2 + Vue 3 + ECharts）
+client/                  # Windows 桌面客户端 MeTD（Tauri 2 + Vue 3 + ECharts）
   src/                   #   Vue 界面：连接管理 / KPI / 历史曲线 / 会话明细 / 健康
   src-tauri/             #   Rust 侧：reqwest 远程访问、令牌持有、命令层
   test/                  #   前端纯函数单元测试（node --test）
@@ -51,11 +51,12 @@ demo/index.html          # 纯前端界面演示（模拟数据，评估交互�
 - Linux 真实抓包入口（`source = "live"`，需 root / CAP_NET_RAW）
 - 可选 Bearer Token 鉴权：`[api] token = "..."` 后，`/api/` 请求需携带 `Authorization: Bearer <token>`
 
-### Windows 桌面客户端（client/）
+### Windows 桌面客户端 MeTD（client/）
 - 连接管理：保存多组服务器配置（地址 + 令牌），本地持久化
 - 实时仪表盘：带宽/包速率/并发连接/丢包率 KPI、最近 1 小时历史曲线（ECharts）
 - 会话明细：IP 子串过滤、协议筛选、分页查看
 - 请求统一经 Rust 命令层（reqwest）访问远程 API，令牌保存在进程状态，规避 CORS
+- **V0.4 UI 升级**：程序更名 **MeTD**（蓝色小猫图标）；历史曲线支持折线/面积/柱状三种图表手动切换；设置区提供夜间/明亮主题切换，界面与图表配色随主题变化并本地记忆
 
 ## 路线图
 
@@ -64,6 +65,7 @@ demo/index.html          # 纯前端界面演示（模拟数据，评估交互�
 | V0.1 MVP ✅ | 全链路闭环（已实现） |
 | V0.2 ✅ | SQLite 接入、环境迁移、Linux 连通验证（已实现） |
 | V0.3（V1 客户端） ✅ | Windows Tauri 桌面客户端、可选令牌鉴权（已实现） |
+| V0.4 ✅ | MeTD：程序更名 + 蓝色小猫图标、三样式统计图切换、夜间/明亮主题（已实现） |
 | V2 | 告警引擎、TOP N、协议分布、IPv6、多队列抓包、WebSocket、鉴权细化、界面插件框架 |
 | V3 | 客户端增强：WebSocket 实时推送、多机对比、Windows 通知、帮助中心型 AI |
 | V4 | 流量控制：Linux 端 tc 限速（仅本机流量，默认关闭 + 二次确认）+ 控制 API/界面 |
@@ -93,7 +95,7 @@ token = "换成你的访问令牌"   # 留空则不鉴权
 ```powershell
 cd "D:\Codex\Linux network control\client"
 npm install
-npx tauri build            # 产物：client/src-tauri/target/release/netmon-client.exe
+npx tauri build            # 产物：client/src-tauri/target/release/metd.exe（程序名 MeTD）
 # 开发调试：npm run dev 后另开终端执行 npx tauri dev
 ```
 
