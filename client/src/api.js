@@ -23,3 +23,13 @@ export function errText(e) {
   if (e && typeof e.message === "string") return e.message;
   return String(e || "未知错误");
 }
+// 开机自启动（tauri-plugin-autostart）
+export function autostartEnable() {
+  return invoke("plugin:autostart|enable");
+}
+export function autostartDisable() {
+  return invoke("plugin:autostart|disable");
+}
+export function autostartIsEnabled() {
+  return invoke("plugin:autostart|is_enabled");
+}

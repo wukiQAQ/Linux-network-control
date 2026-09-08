@@ -1,8 +1,8 @@
 :root {
   --bg: #0b1220;
   --bg-glow: #14233f;
-  --panel: #111a2c;
-  --panel2: #16213a;
+  --panel-rgb: 17 26 44;
+  --panel2-rgb: 22 33 58;
   --line: #243450;
   --text: #e5edf7;
   --muted: #8ea3bf;
@@ -10,13 +10,16 @@
   --ok: #34d399;
   --warn: #fbbf24;
   --danger: #f87171;
+  --alpha: 1;
+  --panel: rgb(var(--panel-rgb) / var(--alpha, 1));
+  --panel2: rgb(var(--panel2-rgb) / var(--alpha, 1));
   color-scheme: dark;
 }
 html[data-theme="light"] {
   --bg: #eef2f8;
   --bg-glow: #ffffff;
-  --panel: #ffffff;
-  --panel2: #f1f5f9;
+  --panel-rgb: 255 255 255;
+  --panel2-rgb: 241 245 249;
   --line: #d7e0ea;
   --text: #0f1b2d;
   --muted: #5b6b81;
@@ -30,14 +33,20 @@ html[data-theme="light"] {
 html, body, #app { height: 100%; margin: 0; }
 body {
   font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
-  background: radial-gradient(1200px 600px at 20% -10%, var(--bg-glow) 0%, var(--bg) 55%);
+  background: radial-gradient(1200px 600px at 20% -10%, var(--bg-glow) 0%, var(--bg) 55%) fixed;
   color: var(--text);
   font-size: 14px;
   transition: background 0.25s ease, color 0.25s ease;
 }
+body.has-bg {
+  background-image: var(--bg-img, none);
+  background-size: cover;
+  background-position: center;
+  background-attachment: fixed;
+}
 button { cursor: pointer; }
 input, select {
-  background: var(--panel2);
+  background: rgb(var(--panel2-rgb) / var(--alpha, 1));
   border: 1px solid var(--line);
   color: var(--text);
   border-radius: 6px;
@@ -49,7 +58,7 @@ input, select {
 input:focus, select:focus { border-color: var(--accent); }
 .btn {
   border: 1px solid var(--line);
-  background: var(--panel2);
+  background: rgb(var(--panel2-rgb) / var(--alpha, 1));
   color: var(--text);
   border-radius: 6px;
   padding: 7px 12px;
@@ -61,10 +70,11 @@ input:focus, select:focus { border-color: var(--accent); }
 .btn.primary:hover { background: #0891b2; color: #fff; }
 .btn.danger:hover { border-color: var(--danger); color: var(--danger); }
 .card {
-  background: var(--panel);
+  background: rgb(var(--panel-rgb) / var(--alpha, 1));
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 14px;
+  backdrop-filter: blur(8px);
   transition: background 0.25s ease, border-color 0.25s ease;
 }
 .muted { color: var(--muted); }

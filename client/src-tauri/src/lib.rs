@@ -1,12 +1,13 @@
-// netmon-client Rust 侧：持有连接配置，通过 reqwest 访问远程 netmon API。
-// 数据请求统一走 Rust 命令，令牌保存在进程状态中，避免 CORS 与令牌暴露在页面中。
+// MeTD Rust 侧：持有连接配置、托盘与自启能力，通过 reqwest 访问远程 netmon API。
 use reqwest::header::AUTHORIZATION;
 use serde_json::Value;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::sync::Mutex;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use tauri::State;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Manager, State};
 
 #[derive(Clone)]
 struct Conn {
@@ -19,13 +20,12 @@ struct ApiState {
     conn: Mutex<Option<Conn>>,
 }
 
-// 简单文件日志（写入系统临时目录 netmon-client.log），用于排查连接问题；不记录令牌明文。
 fn log_line(msg: &str) {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let path = std::env::temp_dir().join("netmon-client.log");
+    let path = std::env::temp_dir().join("metd.log");
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(f, "[{ts}] {msg}");
     }
@@ -60,7 +60,6 @@ fn clear_connection(state: State<'_, ApiState>) -> Result<(), String> {
     Ok(())
 }
 
-// 请求远程 API。path 需以 "/" 开头（如 /api/v1/traffic/now）。
 #[tauri::command]
 async fn api_get(state: State<'_, ApiState>, path: String) -> Result<Value, String> {
     let started = Instant::now();
@@ -139,11 +138,59 @@ pub fn run() {
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .expect("HTTP 客户端初始化失败");
-    log_line("netmon-client 启动");
+    log_line("MeTD 启动");
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .manage(ApiState {
             client,
             conn: Mutex::new(None),
+        })
+        .setup(|app| {
+            let show = MenuItem::with_id(app, "show", "显示 MeTD", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let icon = app
+                .default_window_icon()
+                .cloned()
+                .ok_or("缺少应用图标")?;
+            TrayIconBuilder::with_id("metd-tray")
+                .icon(icon)
+                .tooltip("MeTD - Linux 流量监控")
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(w) = app.get_webview_window("main") {
+                            if w.is_visible().unwrap_or(false) {
+                                let _ = w.hide();
+                            } else {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
+                        }
+                    }
+                })
+                .build(app)?;
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             ping,
