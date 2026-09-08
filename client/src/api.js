@@ -1,6 +1,10 @@
 // 前端统一通过 Rust 命令访问远程 API（避免 CORS，令牌保存在 Rust 状态中）
 import { invoke } from "@tauri-apps/api/core";
 
+export function ping() {
+  return invoke("ping");
+}
+
 export function setConnection(base, token) {
   return invoke("set_connection", { base: base, token: token || "" });
 }

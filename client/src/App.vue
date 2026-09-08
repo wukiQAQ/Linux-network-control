@@ -5,6 +5,7 @@
         {{ toast.text }}
       </div>
     </transition>
+
     <aside class="sidebar card">
       <div class="brand">
         <div class="logo">N</div>
@@ -16,7 +17,7 @@
 
       <div class="field">
         <label>连接名称</label>
-        <input v-model="form.name" placeholder="例如：我的 CentOS" />
+        <input v-model="form.name" placeholder="例如：CentOS" @keyup.enter="connect" />
       </div>
       <div class="field">
         <label>服务器地址</label>
@@ -24,32 +25,53 @@
       </div>
       <div class="field">
         <label>访问令牌（可选）</label>
-        <input v-model="form.token" type="password" placeholder="Linux 端 api.token" @keyup.enter="connect" />
+        <div class="token-row">
+          <input
+            v-model="form.token"
+            :type="showToken ? 'text' : 'password'"
+            placeholder="Linux 端 api.token"
+            @keyup.enter="connect"
+          />
+          <button class="btn eye" type="button" @click="showToken = !showToken">
+            {{ showToken ? "隐藏" : "显示" }}
+          </button>
+        </div>
       </div>
+
       <div class="row">
-        <button class="btn primary grow" :disabled="connecting" @click="connect">
+        <button class="btn primary grow" type="button" :disabled="connecting" @click="connect">
           {{ connecting ? "连接中…" : connected ? "重新连接" : "连接" }}
         </button>
-        <button class="btn" @click="saveProfile">保存</button>
-        <button v-if="connected" class="btn danger" @click="disconnect">断开</button>
+        <button class="btn" type="button" @click="saveProfile">保存</button>
+        <button v-if="connected" class="btn danger" type="button" @click="disconnect">断开</button>
       </div>
-      <div v-if="connError" class="error">{{ connError }}</div>
+
+      <div v-if="banner.show" class="banner" :class="'banner-' + banner.kind">
+        {{ banner.text }}
+      </div>
 
       <div class="profiles">
         <div class="muted section-title">已保存的连接</div>
         <div v-if="!profiles.length" class="muted empty">还没有保存的连接</div>
         <div v-for="(p, i) in profiles" :key="i" class="profile">
-          <button class="profile-main" @click="useProfile(p)">
+          <button class="profile-main" type="button" @click="useProfile(p)">
             <span class="dot" :class="{ on: p.base === form.base && connected }"></span>
             <span>{{ p.name }}</span>
           </button>
-          <button class="profile-del" title="删除" @click="deleteProfile(p.name)">×</button>
+          <button class="profile-del" type="button" title="删除" @click="deleteProfile(p.name)">×</button>
         </div>
       </div>
 
       <div class="status">
         <span class="dot big" :class="statusView_.cls"></span>
         <span>{{ statusView_.text }}</span>
+        <span class="muted kernel" :class="ipcClass">内核：{{ kernelText }}</span>
+      </div>
+
+      <div class="logbox">
+        <div class="muted section-title">连接日志</div>
+        <div v-if="!uiLog.length" class="muted empty">暂无记录，点击"连接"后这里会显示每一步</div>
+        <div v-for="(line, i) in uiLog" :key="i" class="log-line">{{ line }}</div>
       </div>
     </aside>
 
@@ -75,7 +97,7 @@
             <option value="udp">UDP</option>
             <option value="icmp">ICMP</option>
           </select>
-          <button class="btn" :disabled="sessLoading" @click="loadSessions(1)">刷新</button>
+          <button class="btn" type="button" :disabled="sessLoading" @click="loadSessions(1)">刷新</button>
         </div>
         <SessionTable
           :rows="sessRows"
@@ -92,21 +114,20 @@
       <div class="welcome card">
         <h2>连接你的 Linux 监控端</h2>
         <p class="muted">
-          在左侧填写 Linux 上 netmon 的 IP 与端口（默认 8080），即可在 Windows 上实时查看带宽、会话与健康状态。
-          若 Linux 端配置了 api.token，请一并填写。
+          在左侧填写 Linux 上 netmon 的 IP 与端口（默认 8080），点击"连接"即可实时查看带宽、会话与健康状态。
         </p>
-        <p class="muted small">提示：先在 Linux 端运行 netmon（synthetic / replay / live 均可），并放行防火墙端口。</p>
+        <p class="muted small">提示：地址可填 192.168.1.100:8080，也可带 http:// 前缀；若 Linux 端配置了 api.token 请一并填写。</p>
       </div>
     </main>
   </div>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import KpiCards from "./components/KpiCards.vue";
 import TrafficChart from "./components/TrafficChart.vue";
 import SessionTable from "./components/SessionTable.vue";
-import { apiGet, clearConnection, errText, setConnection } from "./api.js";
+import { apiGet, clearConnection, errText, ping, setConnection } from "./api.js";
 import { fmtDuration, fmtTs, normalizeBaseUrl } from "./format.js";
 import { connectMessage, statusView } from "./status.js";
 
@@ -117,7 +138,6 @@ const form = reactive({ name: "", base: "", token: "" });
 const profiles = ref(loadProfiles());
 const connecting = ref(false);
 const connected = ref(false);
-const connError = ref("");
 const now = reactive({});
 const history = ref([]);
 const sessRows = ref([]);
@@ -125,13 +145,28 @@ const sessTotal = ref(0);
 const sessPage = ref(1);
 const sessLoading = ref(false);
 const sessFilter = reactive({ ip: "", proto: "" });
+const showToken = ref(false);
+const uiLog = ref([]);
+const banner = reactive({ show: false, kind: "busy", text: "" });
 
+const toast = reactive({ show: false, type: "ok", text: "" });
+let toastTimer = null;
 let nowTimer = null;
 let historyTimer = null;
 let sessionTimer = null;
 let failCount = 0;
-const toast = reactive({ show: false, type: "ok", text: "" });
-let toastTimer = null;
+
+const statusView_ = computed(() =>
+  statusView(connected.value, form.name || form.base, banner.kind === "err"),
+);
+const ipcOk = ref(null);
+const kernelText = computed(() =>
+  ipcOk.value === true ? "正常" : ipcOk.value === false ? "异常" : "检测中",
+);
+const ipcClass = computed(() =>
+  ipcOk.value === true ? "k-ok" : ipcOk.value === false ? "k-bad" : "",
+);
+
 function notify(msg) {
   if (!msg) return;
   toast.type = msg.type || "err";
@@ -143,9 +178,17 @@ function notify(msg) {
   }, 4000);
 }
 
-const statusView_ = computed(() =>
-  statusView(connected.value, form.name || form.base, connError.value !== ""),
-);
+function pushLog(msg) {
+  const t = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+  uiLog.value.push(`${t} ${msg}`);
+  if (uiLog.value.length > 80) uiLog.value.shift();
+}
+
+function setBanner(kind, text) {
+  banner.kind = kind;
+  banner.text = text;
+  banner.show = text !== "";
+}
 
 function loadProfiles() {
   try {
@@ -161,12 +204,12 @@ function persistProfiles() {
 }
 function saveProfile() {
   if (!form.name.trim()) {
-    connError = "请先填写连接名称";
+    setBanner("err", "请先填写连接名称");
     return;
   }
   const norm = normalizeBaseUrl(form.base);
   if (!norm.ok) {
-    connError = norm.error;
+    setBanner("err", norm.error);
     return;
   }
   const idx = profiles.value.findIndex((p) => p.name === form.name.trim());
@@ -174,20 +217,19 @@ function saveProfile() {
   if (idx >= 0) profiles.value[idx] = item;
   else profiles.value.push(item);
   persistProfiles();
-  connError = "";
+  setBanner("ok", `已保存连接：${item.name}`);
 }
 function useProfile(p) {
   form.name = p.name;
   form.base = p.base;
   form.token = p.token || "";
-  connError = "";
+  setBanner("ok", `已载入连接：${p.name}`);
 }
 function deleteProfile(name) {
   profiles.value = profiles.value.filter((p) => p.name !== name);
   persistProfiles();
 }
 
-// 给异步调用加超时：长时间无响应时自动报错，避免界面一直停留在"连接中"。
 function withTimeout(promise, ms, label) {
   return Promise.race([
     promise,
@@ -201,28 +243,37 @@ function withTimeout(promise, ms, label) {
 }
 
 async function connect() {
+  pushLog("点击连接");
   const norm = normalizeBaseUrl(form.base);
   if (!norm.ok) {
-    connError = norm.error;
-    notify(connectMessage("warn", form.name, norm.error));
+    setBanner("err", norm.error);
+    pushLog("校验失败：" + norm.error);
     return;
   }
+  const label = form.name || norm.url;
   connecting.value = true;
-  connError = "";
-  notify({ type: "ok", text: "正在连接 " + (form.name || norm.url) + " …" });
+  setBanner("busy", "正在连接 " + label + " …");
+  pushLog("地址校验通过：" + norm.url);
+  notify({ type: "ok", text: "正在连接 " + label + " …" });
   try {
+    pushLog("调用内核：set_connection（保存连接配置）");
     await withTimeout(setConnection(norm.url, form.token), 10000, "初始化连接");
+    pushLog("内核：set_connection 完成");
+    pushLog("请求实时数据：/api/v1/traffic/now");
     await withTimeout(apiGet("/api/v1/traffic/now"), 15000, "请求实时数据");
+    pushLog("实时数据请求成功");
     connected.value = true;
     failCount = 0;
-    notify(connectMessage("ok", form.name || norm.url));
+    setBanner("ok", "已连接：" + label);
+    notify(connectMessage("ok", label));
     startTimers();
     await Promise.all([refreshNow(), refreshHistory(), loadSessions(1)]);
   } catch (e) {
     connected.value = false;
     const reason = errText(e);
-    connError = "连接失败：" + reason;
-    notify(connectMessage("err", form.name || norm.url, reason));
+    setBanner("err", "连接失败：" + reason);
+    pushLog("失败：" + reason);
+    notify(connectMessage("err", label, reason));
     stopTimers();
   } finally {
     connecting.value = false;
@@ -232,9 +283,9 @@ async function connect() {
 async function disconnect() {
   stopTimers();
   connected.value = false;
-  connError = "";
   failCount = 0;
-  notify({ type: "ok", text: "已断开连接" });
+  setBanner("ok", "已断开连接");
+  pushLog("已断开连接");
   try {
     await clearConnection();
   } catch {
@@ -264,7 +315,9 @@ async function refreshNow() {
   } catch (e) {
     failCount += 1;
     if (failCount >= 4) {
-      connError = "连接中断：" + errText(e);
+      const reason = errText(e);
+      setBanner("err", "连接中断：" + reason);
+      pushLog("连接中断：" + reason);
       connected.value = false;
       stopTimers();
     }
@@ -307,6 +360,18 @@ watch(
   },
 );
 
+onMounted(async () => {
+  pushLog("客户端启动，进行 IPC 自检…");
+  try {
+    await withTimeout(ping(), 3000, "IPC 自检");
+    ipcOk.value = true;
+    pushLog("IPC 自检通过（内核通道正常）");
+  } catch (e) {
+    ipcOk.value = false;
+    pushLog("IPC 自检失败：" + errText(e));
+  }
+});
+
 onBeforeUnmount(() => {
   stopTimers();
   if (toastTimer) clearTimeout(toastTimer);
@@ -315,7 +380,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .layout { display: flex; height: 100%; gap: 12px; padding: 12px; }
-.sidebar { width: 300px; flex-shrink: 0; display: flex; flex-direction: column; gap: 10px; overflow: auto; }
+.sidebar { width: 320px; flex-shrink: 0; display: flex; flex-direction: column; gap: 10px; overflow: auto; }
 .brand { display: flex; gap: 10px; align-items: center; margin-bottom: 6px; }
 .logo {
   width: 38px; height: 38px; border-radius: 10px; background: linear-gradient(135deg, #0e7490, #22d3ee);
@@ -324,9 +389,20 @@ onBeforeUnmount(() => {
 .brand-title { font-weight: 700; font-size: 15px; }
 .field { display: flex; flex-direction: column; gap: 4px; }
 .field label { color: var(--muted); font-size: 12px; }
+.token-row { display: flex; gap: 6px; }
+.token-row input { flex: 1; }
+.eye { flex-shrink: 0; }
 .row { display: flex; gap: 6px; }
 .grow { flex: 1; }
-.error { color: var(--danger); font-size: 12px; word-break: break-all; }
+.banner {
+  padding: 8px 10px;
+  border-radius: 7px;
+  font-size: 12px;
+  word-break: break-all;
+}
+.banner-busy { background: #12314a; color: #bae6fd; border: 1px solid #0e7490; }
+.banner-ok { background: #064e3b; color: #d1fae5; border: 1px solid #10b981; }
+.banner-err { background: #450a0a; color: #fee2e2; border: 1px solid #ef4444; }
 .profiles { margin-top: 4px; }
 .section-title { font-size: 12px; margin-bottom: 6px; }
 .empty { font-size: 12px; }
@@ -337,20 +413,35 @@ onBeforeUnmount(() => {
   border-radius: 6px; padding: 6px 8px; font-size: 13px; overflow: hidden;
 }
 .profile-main:hover { border-color: var(--accent); }
-.profile-del {
-  background: none; border: none; color: var(--muted); font-size: 16px; padding: 2px 6px;
-}
+.profile-del { background: none; border: none; color: var(--muted); font-size: 16px; padding: 2px 6px; }
 .profile-del:hover { color: var(--danger); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: #475569; flex-shrink: 0; }
 .dot.on { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
 .dot.big { width: 9px; height: 9px; }
 .dot.ok { background: var(--ok); }
 .dot.bad { background: var(--danger); }
-.status { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); margin-top: auto; padding-top: 8px; }
+.status { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--muted); }
+.kernel { font-size: 11px; margin-left: auto; }
+.kernel.k-ok { color: var(--ok); }
+.kernel.k-bad { color: var(--danger); }
+.logbox { margin-top: 2px; }
+.log-line {
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 1px 0;
+  border-bottom: 1px dashed #1b2944;
+  word-break: break-all;
+}
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; overflow: auto; }
 .center { align-items: center; justify-content: center; }
-.welcome { max-width: 520px; text-align: center; padding: 30px; }
+.welcome { max-width: 540px; text-align: center; padding: 30px; }
 .welcome h2 { margin: 0 0 10px; }
+.small { font-size: 12px; }
+.info-line { display: flex; gap: 16px; font-size: 12px; flex-wrap: wrap; }
+.sess-head { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+.sess-title { font-weight: 700; margin-right: auto; }
+.filter-ip { width: 170px; }
 .toast {
   position: fixed;
   top: 18px;
@@ -368,9 +459,4 @@ onBeforeUnmount(() => {
 .toast-err { background: #7f1d1d; color: #fee2e2; border: 1px solid #ef4444; }
 .toast-enter-active, .toast-leave-active { transition: opacity 0.25s, transform 0.25s; }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translateX(-50%) translateY(-6px); }
-.small { font-size: 12px; }
-.info-line { display: flex; gap: 16px; font-size: 12px; flex-wrap: wrap; }
-.sess-head { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
-.sess-title { font-weight: 700; margin-right: auto; }
-.filter-ip { width: 170px; }
 </style>

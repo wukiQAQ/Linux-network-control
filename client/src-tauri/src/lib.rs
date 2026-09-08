@@ -32,6 +32,12 @@ fn log_line(msg: &str) {
 }
 
 #[tauri::command]
+fn ping() -> Result<String, String> {
+    log_line("ping from frontend");
+    Ok("pong".to_string())
+}
+
+#[tauri::command]
 fn set_connection(state: State<'_, ApiState>, base: String, token: String) -> Result<(), String> {
     log_line(&format!("set_connection base={base} token_set={}", !token.is_empty()));
     let mut guard = state
@@ -140,6 +146,7 @@ pub fn run() {
             conn: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
+            ping,
             set_connection,
             clear_connection,
             api_get
