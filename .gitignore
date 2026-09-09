@@ -29,7 +29,6 @@ Thumbs.db
 /client/dist/
 /client/src-tauri/target/
 /client/src-tauri/gen/
-/client/app-icon.png
 npm-debug.log*
 # 移动端图标（本项目仅 Windows 桌面目标）
 /client/src-tauri/icons/android/

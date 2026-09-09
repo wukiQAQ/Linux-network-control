@@ -1,6 +1,6 @@
 [package]
 name = "metd"
-version = "0.4.0"
+version = "0.5.0"
 description = "Linux 网络流量监控 Windows 客户端"
 edition = "2021"
 
