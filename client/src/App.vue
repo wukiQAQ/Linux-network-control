@@ -102,7 +102,13 @@
     <!-- 主内容 -->
     <main class="main">
       <template v-if="connected">
-        <div class="info-line muted">
+              <div v-if="firingAlerts.length" class="alert-banner card">
+        <div class="alert-title">🚨 正在触发中的告警</div>
+        <div v-for="(a, i) in firingAlerts.slice(0, 3)" :key="i" class="alert-item">
+          {{ a.rule_id }} · {{ a.series }} 当前 {{ alertValue(a) }}（阈值 {{ alertThreshold(a) }}）
+        </div>
+      </div>
+      <div class="info-line muted">
           <span>机器：{{ now.machine_id || "-" }}</span>
           <span>数据源：{{ now.source || "-" }}</span>
           <span>运行时长：{{ fmtDuration(now.uptime_s) }}</span>
@@ -204,7 +210,7 @@ import {
   ping,
   setConnection,
 } from "./api.js";
-import { fmtDuration, fmtTs, normalizeBaseUrl } from "./format.js";
+import { fmtDuration, fmtNum, fmtPps, fmtRate, fmtTs, normalizeBaseUrl } from "./format.js";
 import { loadSettings, saveSettings } from "./settings.js";
 import { connectMessage, statusView } from "./status.js";
 
@@ -240,12 +246,14 @@ const sessTotal = ref(0);
 const sessPage = ref(1);
 const sessLoading = ref(false);
 const sessFilter = reactive({ ip: "", proto: "" });
+const firingAlerts = ref([]);
 
 const toast = reactive({ show: false, type: "ok", text: "" });
 let toastTimer = null;
 let nowTimer = null;
 let historyTimer = null;
 let sessionTimer = null;
+let alertTimer = null;
 let failCount = 0;
 
 const statusView_ = computed(() =>
@@ -458,7 +466,7 @@ async function connect() {
     setBanner("ok", "已连接：" + label);
     notify(connectMessage("ok", label));
     startTimers();
-    await Promise.all([refreshNow(), refreshHistory(), loadSessions(1)]);
+    await Promise.all([refreshNow(), refreshHistory(), loadSessions(1), refreshAlerts()]);
   } catch (e) {
     connected.value = false;
     const reason = errText(e);
@@ -489,12 +497,33 @@ function startTimers() {
   nowTimer = setInterval(refreshNow, 1000);
   historyTimer = setInterval(refreshHistory, 5000);
   sessionTimer = setInterval(() => loadSessions(sessPage.value), 8000);
+  alertTimer = setInterval(refreshAlerts, 5000);
 }
 function stopTimers() {
   if (nowTimer) clearInterval(nowTimer);
   if (historyTimer) clearInterval(historyTimer);
   if (sessionTimer) clearInterval(sessionTimer);
-  nowTimer = historyTimer = sessionTimer = null;
+  if (alertTimer) clearInterval(alertTimer);
+  nowTimer = historyTimer = sessionTimer = alertTimer = null;
+}
+async function refreshAlerts() {
+  if (!connected.value) return;
+  try {
+    const data = await apiGet("/api/v1/alerts?status=firing");
+    firingAlerts.value = (data && data.items) || [];
+  } catch {
+    // 告警查询失败不影响主流程
+  }
+}
+function alertValue(a) {
+  if (a.series === "traffic.bps") return fmtRate(a.value);
+  if (a.series === "traffic.pps") return fmtPps(a.value);
+  return fmtNum(a.value);
+}
+function alertThreshold(a) {
+  if (a.series === "traffic.bps") return fmtRate(a.threshold);
+  if (a.series === "traffic.pps") return fmtPps(a.threshold);
+  return fmtNum(a.threshold);
 }
 async function refreshNow() {
   try {
@@ -687,6 +716,9 @@ onBeforeUnmount(() => {
 .k-ok { color: var(--ok); }
 .k-bad { color: var(--danger); }
 .info-line { display: flex; gap: 16px; font-size: 12px; flex-wrap: wrap; }
+.alert-banner { border-color: var(--danger); }
+.alert-title { font-weight: 700; color: var(--danger); margin-bottom: 6px; }
+.alert-item { font-size: 12px; color: var(--danger); padding: 2px 0; }
 .sess-head { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
 .sess-title { font-weight: 700; margin-right: auto; }
 .filter-ip { width: 170px; }
