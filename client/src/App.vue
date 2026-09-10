@@ -1,5 +1,24 @@
 <template>
-  <div class="layout">
+  <div class="shell">
+    <div class="tabbar">
+      <button
+        v-for="t in tabs"
+        :key="t.id"
+        class="tab"
+        :class="{ active: t.id === activeId }"
+        type="button"
+        :title="t.base || '未配置连接'"
+        @click="switchTab(t.id)"
+      >
+        <span class="dot" :class="{ on: t.snapshot && t.snapshot.connected }"></span>
+        <span class="tab-title">{{ t.title }}</span>
+        <span class="tab-close" @click.stop="closeTabUI(t.id)">×</span>
+      </button>
+      <button class="tab add" type="button" title="新增工作区页面" @click="createTabUI">＋</button>
+      <span class="muted tab-hint">多开：同一窗口内新建/切换多个连接页面</span>
+    </div>
+
+    <div class="layout">
     <transition name="toast">
       <div v-if="toast.show" class="toast" :class="'toast-' + toast.type" @click="toast.show = false">
         {{ toast.text }}
@@ -191,6 +210,7 @@
         <p class="muted small">托盘常驻：右键托盘图标可"显示 MeTD / 退出"；左键单击切换显示。</p>
       </div>
     </div>
+    </div>
   </div>
 </template>
 
@@ -211,6 +231,14 @@ import {
   setConnection,
 } from "./api.js";
 import { fmtDuration, fmtNum, fmtPps, fmtRate, fmtTs, normalizeBaseUrl } from "./format.js";
+import {
+  TABS_KEY,
+  closeTabById,
+  createTab,
+  newTabId,
+  nextActiveId,
+  normalizeTabs,
+} from "./tabs.js";
 import { loadSettings, saveSettings } from "./settings.js";
 import { connectMessage, statusView } from "./status.js";
 
@@ -231,6 +259,8 @@ const theme = ref(settings.theme === "light" ? "light" : "dark");
 const chartMode = ref(loadChartMode());
 const settingsOpen = ref(false);
 const bgInput = ref(null);
+const tabs = ref(loadTabs());
+const activeId = ref(tabs.value[0].id);
 
 const form = reactive({ name: "", base: "", token: "" });
 const profiles = ref(loadProfiles());
@@ -254,6 +284,7 @@ let nowTimer = null;
 let historyTimer = null;
 let sessionTimer = null;
 let alertTimer = null;
+let snapshotTimer = null;
 let failCount = 0;
 
 const statusView_ = computed(() =>
@@ -393,6 +424,104 @@ function setBanner(kind, text) {
   banner.show = text !== "";
 }
 
+function loadTabs() {
+  try {
+    const raw = localStorage.getItem(TABS_KEY);
+    return normalizeTabs(raw ? JSON.parse(raw) : []);
+  } catch {
+    return normalizeTabs([]);
+  }
+}
+function persistTabs() {
+  try {
+    localStorage.setItem(TABS_KEY, JSON.stringify(tabs.value));
+  } catch {
+    // 忽略存储失败
+  }
+}
+function activeTab() {
+  return tabs.value.find((t) => t.id === activeId.value) || tabs.value[0];
+}
+// 把当前界面状态写回当前标签页，便于切回时还原
+function saveCurrentTab() {
+  const t = activeTab();
+  if (!t) return;
+  t.name = form.name;
+  t.base = form.base;
+  t.token = form.token;
+  t.title = form.name || t.title || "工作区";
+  t.snapshot = {
+    now: { ...now },
+    history: [...history.value],
+    sessions: [...sessRows.value],
+    total: sessTotal.value,
+    page: sessPage.value,
+    connected: connected.value,
+    logs: [...uiLog.value],
+    banner: { ...banner },
+    firing: [...firingAlerts.value],
+  };
+}
+// 把标签页快照还原到界面
+function applyTabSnapshot(t) {
+  form.name = t.name || "";
+  form.base = t.base || "";
+  form.token = t.token || "";
+  const s = t.snapshot || {};
+  Object.keys(now).forEach((k) => delete now[k]);
+  Object.assign(now, s.now || {});
+  history.value = Array.isArray(s.history) ? [...s.history] : [];
+  sessRows.value = Array.isArray(s.sessions) ? [...s.sessions] : [];
+  sessTotal.value = s.total || 0;
+  sessPage.value = s.page || 1;
+  uiLog.value = Array.isArray(s.logs) ? [...s.logs] : [];
+  firingAlerts.value = Array.isArray(s.firing) ? [...s.firing] : [];
+  Object.assign(banner, { show: false, kind: "busy", text: "" }, s.banner || {});
+  connected.value = Boolean(s.connected);
+}
+function createTabUI() {
+  saveCurrentTab();
+  const t = createTab(newTabId(), "工作区 " + (tabs.value.length + 1));
+  tabs.value.push(t);
+  activeId.value = t.id;
+  applyTabSnapshot(t);
+  persistTabs();
+  stopTimers();
+  nav.value = "accounts";
+  pushLog("已新建工作区页面：" + t.title);
+}
+async function switchTab(id) {
+  if (id === activeId.value) return;
+  saveCurrentTab();
+  activeId.value = id;
+  const t = activeTab();
+  applyTabSnapshot(t);
+  stopTimers();
+  if (t.base) {
+    pushLog(`切换到 ${t.title}（${t.base}），正在重连恢复数据…`);
+    await connect();
+  } else {
+    nav.value = "accounts";
+  }
+  persistTabs();
+}
+function closeTabUI(id) {
+  if (tabs.value.length <= 1) {
+    pushLog("至少保留一个工作区页面");
+    return;
+  }
+  const list = closeTabById(tabs.value, id);
+  const next = nextActiveId(list, id, activeId.value);
+  tabs.value = list;
+  if (next !== activeId.value) {
+    activeId.value = next;
+    applyTabSnapshot(activeTab());
+    stopTimers();
+  }
+  persistTabs();
+  pushLog("已关闭工作区页面");
+}
+
 function saveProfile() {
   if (!form.name.trim()) {
     setBanner("err", "请先填写连接名称");
@@ -464,6 +593,13 @@ async function connect() {
     connected.value = true;
     failCount = 0;
     setBanner("ok", "已连接：" + label);
+    const t = activeTab();
+    if (t) {
+      t.title = form.name || t.title;
+      t.name = form.name;
+      t.base = norm.url;
+      t.token = form.token;
+    }
     notify(connectMessage("ok", label));
     startTimers();
     await Promise.all([refreshNow(), refreshHistory(), loadSessions(1), refreshAlerts()]);
@@ -498,13 +634,18 @@ function startTimers() {
   historyTimer = setInterval(refreshHistory, 5000);
   sessionTimer = setInterval(() => loadSessions(sessPage.value), 8000);
   alertTimer = setInterval(refreshAlerts, 5000);
+  snapshotTimer = setInterval(() => {
+    saveCurrentTab();
+    persistTabs();
+  }, 10000);
 }
 function stopTimers() {
   if (nowTimer) clearInterval(nowTimer);
   if (historyTimer) clearInterval(historyTimer);
   if (sessionTimer) clearInterval(sessionTimer);
   if (alertTimer) clearInterval(alertTimer);
-  nowTimer = historyTimer = sessionTimer = alertTimer = null;
+  if (snapshotTimer) clearInterval(snapshotTimer);
+  nowTimer = historyTimer = sessionTimer = alertTimer = snapshotTimer = null;
 }
 async function refreshAlerts() {
   if (!connected.value) return;
@@ -596,6 +737,17 @@ onMounted(async () => {
   } catch {
     settings.autostart = false;
   }
+  // 恢复首个标签页的界面数据；若上次处于连接状态则自动重连
+  const first = activeTab();
+  if (first) {
+    applyTabSnapshot(first);
+    if (first.base) {
+      pushLog("恢复工作区：" + first.title);
+      if (first.snapshot && first.snapshot.connected) {
+        connect();
+      }
+    }
+  }
   appWindow.onCloseRequested(async (event) => {
     if (settings.closeToTray) {
       event.preventDefault();
@@ -616,7 +768,35 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.layout { display: flex; height: 100%; gap: 12px; padding: 12px; }
+.shell { display: flex; flex-direction: column; height: 100%; }
+.tabbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px 0;
+  flex-wrap: wrap;
+}
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgb(var(--panel-rgb) / var(--alpha, 1));
+  border: 1px solid var(--line);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  color: var(--muted);
+  padding: 6px 10px;
+  font-size: 12px;
+  max-width: 220px;
+}
+.tab:hover { color: var(--text); border-color: var(--accent); }
+.tab.active { color: var(--text); background: var(--panel2); border-color: var(--accent); font-weight: 600; }
+.tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-close { padding: 0 2px; border-radius: 4px; }
+.tab-close:hover { color: var(--danger); }
+.tab.add { font-weight: 700; padding: 6px 12px; }
+.tab-hint { margin-left: auto; font-size: 12px; }
+.layout { flex: 1; min-height: 0; display: flex; gap: 12px; padding: 12px; }
 .rail {
   width: 56px;
   flex-shrink: 0;

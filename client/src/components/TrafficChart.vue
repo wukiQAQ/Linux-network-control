@@ -11,9 +11,25 @@
         class="mode-btn"
         :class="{ active: mode === m.value }"
         type="button"
+        :title="m.label"
         @click="$emit('update-mode', m.value)"
       >
-        {{ m.label }}
+        <svg class="mode-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <template v-if="m.value === 'line'">
+            <polyline points="3,17 8,9 13,13 21,5" />
+          </template>
+          <template v-else-if="m.value === 'area'">
+            <path d="M3 17 L8 9 L13 13 L21 5 L21 20 L3 20 Z" fill="currentColor" opacity="0.28" stroke="none" />
+            <polyline points="3,17 8,9 13,13 21,5" />
+          </template>
+          <template v-else>
+            <rect x="4" y="13" width="4" height="7" rx="1" />
+            <rect x="10" y="8" width="4" height="12" rx="1" />
+            <rect x="16" y="4" width="4" height="16" rx="1" />
+          </template>
+        </svg>
+        <span>{{ m.label }}</span>
       </button>
     </div>
     <div ref="el" class="chart"></div>
@@ -49,8 +65,9 @@ const palette = computed(() =>
         label: "#5b6b81",
         split: "#e2e8f0",
         bps: "#0891b2",
-        bpsArea: "rgba(8,145,178,0.18)",
+        bps2: "#0e7490",
         pps: "#7c3aed",
+        pps2: "#6d28d9",
         tooltipBg: "#ffffff",
         tooltipBorder: "#d7e0ea",
         tooltipText: "#0f1b2d",
@@ -61,8 +78,9 @@ const palette = computed(() =>
         label: "#8ea3bf",
         split: "#1b2944",
         bps: "#22d3ee",
-        bpsArea: "rgba(34,211,238,0.16)",
+        bps2: "#0e7490",
         pps: "#a78bfa",
+        pps2: "#7c3aed",
         tooltipBg: "#0d1728",
         tooltipBorder: "#243450",
         tooltipText: "#e5edf7",
@@ -73,40 +91,60 @@ function buildOption(points, mode, p) {
   const times = points.map((pt) => new Date(pt.t * 1000));
   const bps = points.map((pt) => Number(pt.bps || 0));
   const pps = points.map((pt) => Number(pt.pps || 0));
-  const mkBps = () => {
-    if (mode === "bar") {
-      return {
+
+  const lineSeries = (name, data, color, axis) => ({
+    name,
+    type: "line",
+    yAxisIndex: axis,
+    showSymbol: false,
+    smooth: true,
+    data,
+    lineStyle: { width: 2, color },
+    itemStyle: { color },
+  });
+
+  let series;
+  if (mode === "bar") {
+    // 柱状图：带宽与包速率都用柱形（双 Y 轴），明显区别于折线
+    series = [
+      {
         name: "带宽",
         type: "bar",
         barMaxWidth: 14,
+        itemStyle: { color: p.bps, opacity: 0.85, borderRadius: [3, 3, 0, 0] },
         data: times.map((t, i) => [t, bps[i]]),
-        itemStyle: { color: p.bps, opacity: 0.75, borderRadius: [3, 3, 0, 0] },
-      };
-    }
-    const line = {
-      name: "带宽",
-      type: "line",
-      showSymbol: false,
-      smooth: true,
-      data: times.map((t, i) => [t, bps[i]]),
-      lineStyle: { width: 2, color: p.bps },
-      itemStyle: { color: p.bps },
+      },
+      {
+        name: "包速率",
+        type: "bar",
+        yAxisIndex: 1,
+        barMaxWidth: 14,
+        itemStyle: { color: p.pps, opacity: 0.7, borderRadius: [3, 3, 0, 0] },
+        data: times.map((t, i) => [t, pps[i]]),
+      },
+    ];
+  } else if (mode === "area") {
+    const bpsSeries = lineSeries(
+      "带宽",
+      times.map((t, i) => [t, bps[i]]),
+      p.bps,
+      0,
+    );
+    bpsSeries.areaStyle = {
+      color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+        { offset: 0, color: p.bps },
+        { offset: 1, color: "rgba(34,211,238,0.02)" },
+      ]),
+      opacity: 0.45,
     };
-    if (mode === "area") {
-      line.areaStyle = { color: p.bpsArea };
-    }
-    return line;
-  };
-  const mkPps = () => ({
-    name: "包速率",
-    type: mode === "bar" ? "line" : "line",
-    yAxisIndex: 1,
-    showSymbol: false,
-    smooth: true,
-    data: times.map((t, i) => [t, pps[i]]),
-    lineStyle: { width: mode === "bar" ? 1.5 : 1.5, type: mode === "bar" ? "dashed" : "solid", color: p.pps },
-    itemStyle: { color: p.pps },
-  });
+    series = [bpsSeries, lineSeries("包速率", times.map((t, i) => [t, pps[i]]), p.pps, 1)];
+  } else {
+    series = [
+      lineSeries("带宽", times.map((t, i) => [t, bps[i]]), p.bps, 0),
+      lineSeries("包速率", times.map((t, i) => [t, pps[i]]), p.pps, 1),
+    ];
+  }
+
   return {
     backgroundColor: "transparent",
     tooltip: {
@@ -147,7 +185,7 @@ function buildOption(points, mode, p) {
         splitLine: { show: false },
       },
     ],
-    series: [mkBps(), mkPps()],
+    series,
   };
 }
 
@@ -182,15 +220,19 @@ watch(() => [props.points, props.theme, props.mode], render);
 .chart-head { display: flex; justify-content: space-between; font-weight: 600; }
 .chart-toolbar { display: flex; gap: 6px; }
 .mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   background: var(--panel2);
   border: 1px solid var(--line);
   color: var(--muted);
   border-radius: 6px;
-  padding: 4px 12px;
+  padding: 4px 10px;
   font-size: 12px;
   transition: all 0.2s;
 }
-.mode-btn:hover { border-color: var(--accent); }
+.mode-btn:hover { border-color: var(--accent); color: var(--accent); }
 .mode-btn.active { background: var(--accent); border-color: var(--accent); color: #06222b; font-weight: 600; }
+.mode-ico { width: 16px; height: 16px; }
 .chart { height: 270px; width: 100%; }
 </style>
