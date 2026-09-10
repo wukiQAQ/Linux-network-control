@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/wukiQAQ/Linux-network-control/internal/aggregator"
+	"github.com/wukiQAQ/Linux-network-control/internal/alert"
 	"github.com/wukiQAQ/Linux-network-control/internal/capture"
 	"github.com/wukiQAQ/Linux-network-control/internal/config"
 	"github.com/wukiQAQ/Linux-network-control/internal/flow"
@@ -18,12 +19,13 @@ import (
 
 // App 持有管道各层实例。
 type App struct {
-	Cfg     *config.Config
-	Src     capture.Source
-	Table   *flow.Table
-	Agg     *aggregator.Agg
-	Store   storage.Backend
-	lastP   time.Time
+	Cfg    *config.Config
+	Src    capture.Source
+	Table  *flow.Table
+	Agg    *aggregator.Agg
+	Store  storage.Backend
+	Alerts *alert.Engine // 可选告警引擎，nil 表示不启用
+	lastP  time.Time
 }
 
 func New(cfg *config.Config, src capture.Source, table *flow.Table, agg *aggregator.Agg, store storage.Backend) *App {
@@ -51,6 +53,7 @@ func (a *App) TickOnce(now time.Time) aggregator.Sample {
 		}
 	}
 	a.persistMetrics(s)
+	a.evaluateAlerts(now, s)
 	if now.Sub(a.lastP) >= a.Cfg.Retention/2 || a.lastP.IsZero() {
 		a.lastP = now
 		if err := a.Store.Prune(now); err != nil {
@@ -58,6 +61,23 @@ func (a *App) TickOnce(now time.Time) aggregator.Sample {
 		}
 	}
 	return s
+}
+
+// evaluateAlerts 用本次采样评估告警规则并记录产生的事件。
+func (a *App) evaluateAlerts(now time.Time, s aggregator.Sample) {
+	if a.Alerts == nil {
+		return
+	}
+	pts := []alert.Point{
+		{Series: "traffic.bps", Value: s.Bps},
+		{Series: "traffic.pps", Value: s.Pps},
+		{Series: "traffic.conns", Value: float64(s.Active)},
+		{Series: "traffic.drops", Value: float64(s.DropEvents)},
+	}
+	for _, ev := range a.Alerts.Evaluate(now, pts) {
+		log.Printf("[alert] %s %s rule=%s value=%.0f threshold=%.0f",
+			ev.Status, ev.Series, ev.RuleID, ev.Value, ev.Threshold)
+	}
 }
 
 func (a *App) toRecord(f flow.Flow) storage.FlowRecord {

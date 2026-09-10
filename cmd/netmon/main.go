@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/wukiQAQ/Linux-network-control/internal/aggregator"
+	"github.com/wukiQAQ/Linux-network-control/internal/alert"
 	"github.com/wukiQAQ/Linux-network-control/internal/api"
 	"github.com/wukiQAQ/Linux-network-control/internal/app"
 	"github.com/wukiQAQ/Linux-network-control/internal/capture"
@@ -57,8 +58,12 @@ func main() {
 	}
 	defer store.Close()
 
+	eng := buildAlertEngine(cfg)
 	a := app.New(cfg, src, table, agg, store)
-	handler := api.New(cfg, agg, table, store, webui.FS).Handler()
+	a.Alerts = eng
+	srv := api.New(cfg, agg, table, store, webui.FS)
+	srv.SetAlerts(eng)
+	handler := srv.Handler()
 	httpSrv := &http.Server{Addr: cfg.Listen, Handler: handler}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -89,6 +94,33 @@ func main() {
 	defer cancel()
 	_ = httpSrv.Shutdown(shutdownCtx)
 	log.Printf("[main] 已退出")
+}
+
+// buildAlertEngine 按配置构建告警引擎；未启用或无有效阈值规则时返回 nil。
+func buildAlertEngine(cfg *config.Config) *alert.Engine {
+	if !cfg.Alert.Enabled {
+		return nil
+	}
+	rules := []alert.Rule{}
+
+	if cfg.Alert.BpsThreshold > 0 {
+		rules = append(rules, alert.Rule{ID: "bps-high", Series: "traffic.bps", Threshold: cfg.Alert.BpsThreshold, For: time.Duration(cfg.Alert.BpsForSecs) * time.Second})
+	}
+	if cfg.Alert.PpsThreshold > 0 {
+		rules = append(rules, alert.Rule{ID: "pps-high", Series: "traffic.pps", Threshold: cfg.Alert.PpsThreshold, For: time.Duration(cfg.Alert.PpsForSecs) * time.Second})
+	}
+	if cfg.Alert.ConnsThreshold > 0 {
+		rules = append(rules, alert.Rule{ID: "conns-high", Series: "traffic.conns", Threshold: cfg.Alert.ConnsThreshold, For: time.Duration(cfg.Alert.ConnsForSecs) * time.Second})
+	}
+	if cfg.Alert.DropsThreshold > 0 {
+		rules = append(rules, alert.Rule{ID: "drops-high", Series: "traffic.drops", Threshold: cfg.Alert.DropsThreshold, For: time.Duration(cfg.Alert.DropsForSecs) * time.Second})
+	}
+	if len(rules) == 0 {
+		log.Printf("[alert] 已启用但未配置有效阈值规则，跳过")
+		return nil
+	}
+	log.Printf("[alert] 启用 %d 条规则（webhook=%s）", len(rules), cfg.Alert.Webhook)
+	return alert.New(rules, cfg.Alert.Webhook)
 }
 
 // buildSource 按配置创建数据源；live 模式仅在 Linux 上可用。

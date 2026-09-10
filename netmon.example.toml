@@ -20,3 +20,15 @@ retention_hours = 24       # 数据保留时长（小时）
 [api]
 listen = ":8080"           # HTTP 监听地址
 token = ""                 # 可选 API 访问令牌（Bearer Token），留空不鉴权；桌面客户端远程连接建议设置
+
+[alert]
+enabled = false            # 是否启用告警引擎（默认关闭）
+bps_threshold = 0          # 带宽阈值 bit/s，0 表示不启用（示例：100000000 = 100 Mb/s）
+bps_for_secs = 30          # 持续超过阈值多少秒触发
+pps_threshold = 0          # 包速率阈值
+pps_for_secs = 30
+conns_threshold = 0        # 并发连接数阈值
+conns_for_secs = 30
+drops_threshold = 0        # 每秒丢包数阈值
+drops_for_secs = 30
+webhook = ""               # 触发时通知的 URL（如企业微信/钉钉机器人），留空仅记录

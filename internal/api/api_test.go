@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/wukiQAQ/Linux-network-control/internal/aggregator"
+	"github.com/wukiQAQ/Linux-network-control/internal/alert"
 	"github.com/wukiQAQ/Linux-network-control/internal/config"
 	"github.com/wukiQAQ/Linux-network-control/internal/flow"
 	"github.com/wukiQAQ/Linux-network-control/internal/storage"
@@ -192,5 +193,61 @@ func TestAuthRequired(t *testing.T) {
 	defer r2.Body.Close()
 	if r2.StatusCode != http.StatusOK {
 		t.Fatalf("静态页 status=%d, want 200", r2.StatusCode)
+	}
+}
+
+// alertTestServer 返回已注入告警引擎（含一条 firing 事件）的测试服务。
+func alertTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	cfg := config.Default()
+	cfg.APIToken = "test-secret"
+	store, err := storage.OpenFileStore(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agg := aggregator.New(100)
+	table := flow.NewTable(time.Minute, 5*time.Minute, nil)
+	srv := New(cfg, agg, table, store, webui.FS)
+	eng := alert.NewWithOptions([]alert.Rule{
+		{ID: "bps-high", Series: "traffic.bps", Threshold: 1000, For: 0},
+	}, alert.Options{Notify: func(alert.Event) error { return nil }})
+	eng.Evaluate(time.Now().UTC(), []alert.Point{{Series: "traffic.bps", Value: 5000}})
+	srv.SetAlerts(eng)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(func() { _ = store.Close() })
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func TestAlertsAPI(t *testing.T) {
+	ts := alertTestServer(t)
+	do := func(query string) map[string]any {
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/alerts"+query, nil)
+		req.Header.Set("Authorization", "Bearer test-secret")
+		r, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Body.Close()
+		if r.StatusCode != http.StatusOK {
+			t.Fatalf("alerts status=%d", r.StatusCode)
+		}
+		var out map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	firing := do("?status=firing")
+	if firing["total"].(float64) != 1 {
+		t.Fatalf("firing 总数=%v, want 1", firing["total"])
+	}
+	all := do("")
+	if all["total"].(float64) != 1 {
+		t.Fatalf("全部事件数=%v, want 1", all["total"])
+	}
+	empty := do("?status=resolved")
+	if empty["total"].(float64) != 0 {
+		t.Fatalf("resolved 应无事件: %v", empty["total"])
 	}
 }

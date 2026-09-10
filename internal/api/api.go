@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/wukiQAQ/Linux-network-control/internal/aggregator"
+	"github.com/wukiQAQ/Linux-network-control/internal/alert"
 	"github.com/wukiQAQ/Linux-network-control/internal/config"
 	"github.com/wukiQAQ/Linux-network-control/internal/flow"
 	"github.com/wukiQAQ/Linux-network-control/internal/storage"
@@ -24,12 +25,18 @@ type Server struct {
 	store   storage.Backend
 	table   *flow.Table
 	cfg     *config.Config
+	alerts  *alert.Engine // 可选告警引擎，nil 表示未启用
 	started time.Time
 	ui      fs.FS
 }
 
 func New(cfg *config.Config, agg *aggregator.Agg, table *flow.Table, store storage.Backend, ui fs.FS) *Server {
 	return &Server{agg: agg, store: store, table: table, cfg: cfg, started: time.Now(), ui: ui}
+}
+
+// SetAlerts 注入告警引擎（nil 表示未启用，接口返回空列表）。
+func (s *Server) SetAlerts(e *alert.Engine) {
+	s.alerts = e
 }
 
 // Handler 返回路由。注意：静态页面注册在 "/"，精确 API 路径优先匹配。
@@ -40,6 +47,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/traffic/history", s.handleHistory)
 	mux.HandleFunc("GET /api/v1/sessions", s.handleSessions)
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
+	mux.HandleFunc("GET /api/v1/alerts", s.handleAlerts)
 	mux.Handle("/", http.FileServerFS(s.ui))
 	h := http.Handler(logRequests(mux))
 	if s.cfg.APIToken != "" {
@@ -235,6 +243,23 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"total": total, "page": page, "page_size": pageSize, "items": items,
 	})
+}
+
+// handleAlerts 查询告警事件：status=firing|resolved|all（默认全部）。
+func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
+	status := strings.ToLower(r.URL.Query().Get("status"))
+	if status == "all" {
+		status = ""
+	}
+	if status != "" && status != "firing" && status != "resolved" {
+		httpError(w, http.StatusBadRequest, "status 仅支持 firing / resolved / all")
+		return
+	}
+	items := []alert.Event{}
+	if s.alerts != nil {
+		items = s.alerts.List(status)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": len(items), "items": items})
 }
 
 func protoName(p uint8) string {

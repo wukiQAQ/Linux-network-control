@@ -69,3 +69,48 @@ func TestMissingFileReturnsError(t *testing.T) {
 		t.Error("期望文件不存在错误")
 	}
 }
+
+func TestAlertConfigParsing(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/alert.toml"
+	content := `[alert]
+enabled = true
+bps_threshold = 1000000
+bps_for_secs = 15
+pps_threshold = 500
+pps_for_secs = 10
+conns_threshold = 2000
+drops_threshold = 50
+webhook = "http://127.0.0.1:9000/hook"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Alert.Enabled {
+		t.Error("alert.enabled 未解析")
+	}
+	if cfg.Alert.BpsThreshold != 1_000_000 || cfg.Alert.BpsForSecs != 15 {
+		t.Errorf("bps 告警配置异常: %+v", cfg.Alert)
+	}
+	if cfg.Alert.PpsThreshold != 500 || cfg.Alert.PpsForSecs != 10 {
+		t.Errorf("pps 告警配置异常: %+v", cfg.Alert)
+	}
+	if cfg.Alert.ConnsThreshold != 2000 || cfg.Alert.DropsThreshold != 50 {
+		t.Errorf("conns/drops 阈值异常: %+v", cfg.Alert)
+	}
+	if cfg.Alert.Webhook != "http://127.0.0.1:9000/hook" {
+		t.Errorf("webhook 异常: %q", cfg.Alert.Webhook)
+	}
+	// 未配置时默认不启用
+	cfg2 := Default()
+	if cfg2.Alert.Enabled {
+		t.Error("默认应禁用告警")
+	}
+	if cfg2.Alert.BpsForSecs != 30 {
+		t.Errorf("默认持续秒数=%d, want 30", cfg2.Alert.BpsForSecs)
+	}
+}
