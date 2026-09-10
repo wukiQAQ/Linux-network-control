@@ -140,6 +140,15 @@ pub fn run() {
         .expect("HTTP 客户端初始化失败");
     log_line("MeTD 启动");
     tauri::Builder::default()
+        // 单实例：已运行时再次点击快捷方式，只在原进程里唤起窗口，不再新建进程
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            log_line("检测到重复启动，唤起已有窗口");
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,

@@ -1,6 +1,6 @@
 [package]
 name = "metd"
-version = "0.5.3"
+version = "0.5.4"
 description = "Linux 网络流量监控 Windows 客户端"
 edition = "2021"
 
@@ -14,5 +14,6 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = "1"
