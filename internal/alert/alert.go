@@ -22,14 +22,14 @@ type Rule struct {
 
 // Event 一条告警事件（触发或恢复都会记录一条）。
 type Event struct {
-	RuleID     string    `json:"rule_id"`
-	Series     string    `json:"series"`
-	Value      float64   `json:"value"`
-	Threshold  float64   `json:"threshold"`
-	Status     string    `json:"status"` // firing | resolved
-	StartedAt  time.Time `json:"started_at"`
-	ResolvedAt time.Time `json:"resolved_at,omitempty"`
-	Notified   bool      `json:"notified"`
+	RuleID     string     `json:"rule_id"`
+	Series     string     `json:"series"`
+	Value      float64    `json:"value"`
+	Threshold  float64    `json:"threshold"`
+	Status     string     `json:"status"` // firing | resolved
+	StartedAt  time.Time  `json:"started_at"`
+	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
+	Notified   bool       `json:"notified"`
 }
 
 // Point 一次评估中的一个指标值。
@@ -118,7 +118,8 @@ func (e *Engine) Evaluate(now time.Time, pts []Point) []Event {
 			delete(e.since, key)
 			if cur, firing := e.firing[key]; firing {
 				cur.Status = "resolved"
-				cur.ResolvedAt = now
+				t := now
+				cur.ResolvedAt = &t
 				cur.Value = v
 				delete(e.firing, key)
 				e.push(cur)

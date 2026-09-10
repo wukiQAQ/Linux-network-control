@@ -31,7 +31,7 @@ func TestFiresAfterForDurationAndResolves(t *testing.T) {
 	// 指标回落：恢复
 	low := []Point{{Series: "traffic.bps", Value: 100}}
 	got = eng.Evaluate(base.Add(3*time.Second), low)
-	if len(got) != 1 || got[0].Status != "resolved" || got[0].ResolvedAt.IsZero() {
+	if len(got) != 1 || got[0].Status != "resolved" || got[0].ResolvedAt == nil {
 		t.Fatalf("恢复事件异常: %+v", got)
 	}
 	if len(eng.Firing()) != 0 {
