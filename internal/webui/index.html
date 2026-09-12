@@ -89,7 +89,18 @@
 
   <div class="card">
     <div class="chead"><h2>流量趋势</h2><span class="spacer"></span>
-      <div class="seg">
+      <div class="seg" id="modeSeg">
+        <button class="on" data-m="line" onclick="setChartMode('line')" title="折线图">折线</button>
+        <button data-m="area" onclick="setChartMode('area')" title="面积图">面积</button>
+        <button data-m="bar" onclick="setChartMode('bar')" title="柱状图">柱状</button>
+      </div>
+      <div class="seg" id="zoomSeg">
+        <button onclick="zoomChart('in')" title="放大时间轴（也可用鼠标滚轮）">放大 ＋</button>
+        <button onclick="zoomChart('out')" title="缩小时间轴">缩小 －</button>
+        <button onclick="zoomChart('reset')" title="恢复全量时间轴">重置</button>
+        <span id="zoomInfo" style="align-self:center;padding:0 8px;font-size:12px;color:#8ea0c4">全量</span>
+      </div>
+      <div class="seg" id="rangeSeg">
         <button class="on" data-r="600" onclick="setRange(600,this)">近 10 分钟</button>
         <button data-r="3600" onclick="setRange(3600,this)">近 1 小时</button>
       </div>
@@ -145,6 +156,7 @@
 <script>
 "use strict";
 let unit = "auto", range = 600, page = 1, total = 0, simDropTotal = 0, last = null;
+let chartMode = "line", zoomFactor = 1, lastPoints = [];
 const $ = id => document.getElementById(id);
 
 async function getJSON(url) {
@@ -195,26 +207,68 @@ async function refreshNow() {
 async function refreshHistory() {
   const since = range || 600, step = range <= 600 ? 1 : 5;
   const d = await getJSON("/api/v1/traffic/history?since=" + since + "&step=" + step);
-  drawChart(d.points);
+  lastPoints = d.points;
+  drawChart(lastPoints);
   $("chartInfo").textContent = "近 " + (since / 60) + " 分钟 · " + d.points.length + " 点 · 粒度 " + step + "s";
 }
 
+// 缩放只截取时间轴末尾的一段：factor=1 表示全量，越小放得越大
+function visiblePoints(points, factor) {
+  const all = Array.isArray(points) ? points : [];
+  const f = Math.min(1, Math.max(0.05, Number(factor) || 1));
+  const keep = Math.max(2, Math.round(all.length * f));
+  return all.length > keep ? all.slice(all.length - keep) : all;
+}
+
+// chartMode: line 折线 / area 面积 / bar 柱状
 function drawChart(points) {
   const W = 1200, H = 230, P = 8;
-  const maxV = Math.max(1, ...points.map(p => p.bps)) * 1.1;
-  const n = points.length;
-  const x = i => n <= 1 ? 0 : (i / (n - 1)) * W;
+  const pts = visiblePoints(points, zoomFactor);
+  const n = pts.length;
+  const maxV = Math.max(1, ...pts.map(p => p.bps)) * 1.1;
+  const x = i => n <= 1 ? W / 2 : (i / (n - 1)) * W;
   const y = v => P + (1 - Math.min(v / maxV, 1)) * (H - 2 * P);
-  let path = "";
-  points.forEach((p, i) => { path += (i ? "L" : "M") + x(i).toFixed(1) + " " + y(p.bps).toFixed(1); });
-  const area = path + " L" + W + " " + H + " L0 " + H + " Z";
-  $("chart").innerHTML =
-    '<defs><linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">' +
-    '<stop offset="0%" stop-color="#38bdf8" stop-opacity=".3"/><stop offset="100%" stop-color="#38bdf8" stop-opacity="0"/>' +
-    "</linearGradient></defs>" +
-    '<path d="' + area + '" fill="url(#g1)"/>' +
-    (path ? '<path d="' + path + '" fill="none" stroke="#38bdf8" stroke-width="2"/>' : "") +
-    '<text x="10" y="18" fill="#8ea0c4" font-size="11">峰值 ' + fmtRate(maxV / 1.1) + "</text>";
+  let inner = "";
+  if (chartMode === "bar") {
+    const bw = Math.max(1, Math.min(20, (W / Math.max(n, 1)) * 0.7));
+    pts.forEach((p, i) => {
+      const yy = y(p.bps);
+      inner += '<rect x="' + (x(i) - bw / 2).toFixed(1) + '" y="' + yy.toFixed(1) +
+        '" width="' + bw.toFixed(1) + '" height="' + Math.max(0, H - P - yy).toFixed(1) +
+        '" rx="1" fill="#38bdf8" opacity="0.85"/>';
+    });
+  } else {
+    let path = "";
+    pts.forEach((p, i) => { path += (i ? "L" : "M") + x(i).toFixed(1) + " " + y(p.bps).toFixed(1); });
+    if (chartMode === "area") {
+      inner += '<defs><linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">' +
+        '<stop offset="0%" stop-color="#38bdf8" stop-opacity=".35"/>' +
+        '<stop offset="100%" stop-color="#38bdf8" stop-opacity="0"/></linearGradient></defs>' +
+        '<path d="' + path + " L" + W + " " + H + " L0 " + H + ' Z" fill="url(#g1)"/>';
+    }
+    if (path) inner += '<path d="' + path + '" fill="none" stroke="#38bdf8" stroke-width="2"/>';
+  }
+  inner += '<text x="10" y="18" fill="#8ea0c4" font-size="11">峰值 ' + fmtRate(maxV / 1.1) + "</text>";
+  $("chart").innerHTML = inner;
+}
+
+function setChartMode(m) {
+  chartMode = m === "area" || m === "bar" ? m : "line";
+  const seg = $("modeSeg");
+  if (seg) seg.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.getAttribute("data-m") === chartMode));
+  drawChart(lastPoints);
+}
+
+function zoomChart(dir) {
+  if (dir === "reset") zoomFactor = 1;
+  else zoomFactor = Math.min(1, Math.max(0.05, dir === "in" ? zoomFactor * 0.6 : zoomFactor / 0.6));
+  updateZoomInfo();
+  drawChart(lastPoints);
+}
+
+function updateZoomInfo() {
+  const el = $("zoomInfo");
+  if (el) el.textContent = zoomFactor >= 0.999 ? "全量" : "显示 " + Math.round(zoomFactor * 100) + "%";
 }
 
 async function loadSessions(pg) {
@@ -244,7 +298,9 @@ async function loadSessions(pg) {
 }
 function pageSessions(d) { loadSessions(page + d); }
 function resetFilter() { $("fIp").value = ""; $("fProto").value = ""; $("fPort").value = ""; loadSessions(1); }
-function setRange(r, btn) { range = r; document.querySelectorAll(".seg button").forEach(b => b.classList.remove("on")); btn.classList.add("on"); refreshHistory(); }
+function setRange(r, btn) { range = r;
+  document.querySelectorAll("#rangeSeg button").forEach(b => b.classList.remove("on"));
+  btn.classList.add("on"); refreshHistory(); }
 function switchTab(t, btn) { document.querySelectorAll(".tabs button").forEach(b => b.classList.remove("on")); btn.classList.add("on"); document.querySelectorAll(".tab").forEach(x => x.classList.remove("on")); $("tab-" + t).classList.add("on"); if (t === "health") refreshNow(); if (t === "sessions") loadSessions(1); }
 function simDrop() {
   simDropTotal += Math.floor(Math.random() * 100) + 20;
@@ -257,6 +313,9 @@ function simDrop() {
 $("unitSel").addEventListener("change", e => { unit = e.target.value; localStorage.setItem("unit", unit); refreshNow(); refreshHistory(); });
 unit = localStorage.getItem("unit") || "auto";
 $("unitSel").value = unit;
+updateZoomInfo();
+// 鼠标滚轮直接缩放时间轴，方便查看尖峰细节
+$("chart").addEventListener("wheel", e => { e.preventDefault(); zoomChart(e.deltaY < 0 ? "in" : "out"); }, { passive: false });
 
 loadSessions(1);
 refreshNow(); refreshHistory();
