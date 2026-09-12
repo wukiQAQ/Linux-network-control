@@ -92,7 +92,6 @@
       <div class="seg" id="modeSeg">
         <button class="on" data-m="line" onclick="setChartMode('line')" title="折线图">折线</button>
         <button data-m="area" onclick="setChartMode('area')" title="面积图">面积</button>
-        <button data-m="bar" onclick="setChartMode('bar')" title="柱状图">柱状</button>
       </div>
       <div class="seg" id="zoomSeg">
         <button onclick="zoomChart('in')" title="放大时间轴（也可用鼠标滚轮）">放大 ＋</button>
@@ -220,7 +219,7 @@ function visiblePoints(points, factor) {
   return all.length > keep ? all.slice(all.length - keep) : all;
 }
 
-// chartMode: line 折线 / area 面积 / bar 柱状
+// chartMode: line 折线 / area 面积（柱状图已移除）
 function drawChart(points) {
   const W = 1200, H = 230, P = 8;
   const pts = visiblePoints(points, zoomFactor);
@@ -229,31 +228,21 @@ function drawChart(points) {
   const x = i => n <= 1 ? W / 2 : (i / (n - 1)) * W;
   const y = v => P + (1 - Math.min(v / maxV, 1)) * (H - 2 * P);
   let inner = "";
-  if (chartMode === "bar") {
-    const bw = Math.max(1, Math.min(20, (W / Math.max(n, 1)) * 0.7));
-    pts.forEach((p, i) => {
-      const yy = y(p.bps);
-      inner += '<rect x="' + (x(i) - bw / 2).toFixed(1) + '" y="' + yy.toFixed(1) +
-        '" width="' + bw.toFixed(1) + '" height="' + Math.max(0, H - P - yy).toFixed(1) +
-        '" rx="1" fill="#38bdf8" opacity="0.85"/>';
-    });
-  } else {
-    let path = "";
-    pts.forEach((p, i) => { path += (i ? "L" : "M") + x(i).toFixed(1) + " " + y(p.bps).toFixed(1); });
-    if (chartMode === "area") {
-      inner += '<defs><linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">' +
-        '<stop offset="0%" stop-color="#38bdf8" stop-opacity=".35"/>' +
-        '<stop offset="100%" stop-color="#38bdf8" stop-opacity="0"/></linearGradient></defs>' +
-        '<path d="' + path + " L" + W + " " + H + " L0 " + H + ' Z" fill="url(#g1)"/>';
-    }
-    if (path) inner += '<path d="' + path + '" fill="none" stroke="#38bdf8" stroke-width="2"/>';
+  let path = "";
+  pts.forEach((p, i) => { path += (i ? "L" : "M") + x(i).toFixed(1) + " " + y(p.bps).toFixed(1); });
+  if (chartMode === "area") {
+    inner += '<defs><linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0%" stop-color="#38bdf8" stop-opacity=".35"/>' +
+      '<stop offset="100%" stop-color="#38bdf8" stop-opacity="0"/></linearGradient></defs>' +
+      '<path d="' + path + " L" + W + " " + H + " L0 " + H + ' Z" fill="url(#g1)"/>';
   }
+  if (path) inner += '<path d="' + path + '" fill="none" stroke="#38bdf8" stroke-width="2"/>';
   inner += '<text x="10" y="18" fill="#8ea0c4" font-size="11">峰值 ' + fmtRate(maxV / 1.1) + "</text>";
   $("chart").innerHTML = inner;
 }
 
 function setChartMode(m) {
-  chartMode = m === "area" || m === "bar" ? m : "line";
+  chartMode = m === "area" ? "area" : "line";
   const seg = $("modeSeg");
   if (seg) seg.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.getAttribute("data-m") === chartMode));
   drawChart(lastPoints);

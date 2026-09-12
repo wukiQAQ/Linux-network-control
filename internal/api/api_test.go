@@ -51,6 +51,29 @@ func getJSON(t *testing.T, url string, out any) {
 	}
 }
 
+// TestVersionAndFeatures 校验实时指标里带上了版本与能力清单（客户端据此判断功能可用性）。
+func TestVersionAndFeatures(t *testing.T) {
+	ts, _ := newTestServer(t)
+	var out map[string]any
+	getJSON(t, ts.URL+"/api/v1/traffic/now", &out)
+	if v, _ := out["version"].(string); v == "" {
+		t.Error("traffic/now 应包含 version 字段")
+	}
+	features, ok := out["features"].([]any)
+	if !ok || len(features) == 0 {
+		t.Fatalf("traffic/now 应包含非空 features 数组，实际 %v", out["features"])
+	}
+	found := false
+	for _, f := range features {
+		if f == "capture.dump" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("features 应包含 capture.dump，实际 %v", features)
+	}
+}
+
 func TestNowAndHealth(t *testing.T) {
 	ts, _ := newTestServer(t)
 	var now map[string]any

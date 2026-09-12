@@ -15,6 +15,7 @@ import (
 
 	"github.com/wukiQAQ/Linux-network-control/internal/aggregator"
 	"github.com/wukiQAQ/Linux-network-control/internal/alert"
+	"github.com/wukiQAQ/Linux-network-control/internal/buildinfo"
 	"github.com/wukiQAQ/Linux-network-control/internal/capture"
 	"github.com/wukiQAQ/Linux-network-control/internal/config"
 	"github.com/wukiQAQ/Linux-network-control/internal/flow"
@@ -110,6 +111,8 @@ func (s *Server) statsMap() map[string]any {
 		"flows_active": s.table.Active(),
 		"machine_id":   s.cfg.MachineID,
 		"source":       s.cfg.Source,
+		"version":      buildinfo.Version,
+		"features":     buildinfo.Features,
 	}
 }
 

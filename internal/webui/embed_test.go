@@ -24,7 +24,6 @@ func TestEmbeddedDashboardAssets(t *testing.T) {
 		{`id="modeSeg"`, "图表类型切换控件"},
 		{`data-m="line"`, "折线图按钮"},
 		{`data-m="area"`, "面积图按钮"},
-		{`data-m="bar"`, "柱状图按钮"},
 		{"function setChartMode", "图表类型切换函数"},
 		{`id="zoomSeg"`, "缩放控件"},
 		{`id="zoomInfo"`, "缩放比例提示"},
@@ -36,6 +35,10 @@ func TestEmbeddedDashboardAssets(t *testing.T) {
 		if !strings.Contains(html, w.marker) {
 			t.Errorf("内嵌仪表盘缺少 %s（%s）", w.desc, w.marker)
 		}
+	}
+	// 柱状图已按需求移除，页面不应再出现相关标记。
+	if strings.Contains(html, `data-m="bar"`) || strings.Contains(html, `chartMode === "bar"`) {
+		t.Error("内嵌仪表盘仍存在柱状图相关实现")
 	}
 	// 时间范围与图表类型是两组独立控件，切换时间范围不能清掉图表类型的选中态。
 	if strings.Contains(html, `document.querySelectorAll(".seg button")`) {
