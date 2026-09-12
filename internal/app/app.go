@@ -24,7 +24,8 @@ type App struct {
 	Table  *flow.Table
 	Agg    *aggregator.Agg
 	Store  storage.Backend
-	Alerts *alert.Engine // 可选告警引擎，nil 表示不启用
+	Alerts *alert.Engine   // 可选告警引擎，nil 表示不启用
+	Dumper *capture.Dumper // 可选按需抓包器，nil 表示不导出 pcap
 	lastP  time.Time
 }
 
@@ -34,6 +35,10 @@ func New(cfg *config.Config, src capture.Source, table *flow.Table, agg *aggrega
 
 // HandlePacket 处理一个原始报文：解析失败计为一次丢弃，成功则进入流表与聚合。
 func (a *App) HandlePacket(p *capture.Packet) bool {
+	if a.Dumper != nil {
+		// 按需抓包：把原始报文写入 pcap，供 Wireshark 等工具分析
+		a.Dumper.Write(p)
+	}
 	info, err := parser.Parse(p.Raw)
 	if err != nil {
 		a.Agg.RecordDrop()

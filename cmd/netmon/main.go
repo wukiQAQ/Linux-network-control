@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"syscall"
 	"time"
@@ -59,10 +60,14 @@ func main() {
 	defer store.Close()
 
 	eng := buildAlertEngine(cfg)
+	// 按需抓包：导出 pcap 供 Wireshark 分析（文件放在数据目录的 dumps 子目录）
+	dumper := capture.NewDumper(filepath.Join(cfg.DataDir, "dumps"))
 	a := app.New(cfg, src, table, agg, store)
 	a.Alerts = eng
+	a.Dumper = dumper
 	srv := api.New(cfg, agg, table, store, webui.FS)
 	srv.SetAlerts(eng)
+	srv.SetDumper(dumper)
 	handler := srv.Handler()
 	httpSrv := &http.Server{Addr: cfg.Listen, Handler: handler}
 

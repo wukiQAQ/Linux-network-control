@@ -92,3 +92,44 @@ func TestPcapReplayPipeline(t *testing.T) {
 		t.Errorf("指标点数=%d, want 2（两次 TickOnce）", len(pts))
 	}
 }
+
+// TestAppDumperHook 验证按需抓包钩子：注入后每个报文都会写入 pcap，未注入时不影响主流程。
+func TestAppDumperHook(t *testing.T) {
+	cfg := config.Default()
+	store, err := storage.OpenFileStore(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatalf("OpenFileStore: %v", err)
+	}
+	defer store.Close()
+
+	table := flow.NewTable(time.Minute, 5*time.Minute, nil)
+	a := New(cfg, capture.NewSynthetic(1000, "eth0"), table, aggregator.New(10), store)
+	pkt := &capture.Packet{
+		Ts:  time.Now().UTC(),
+		Raw: parser.BuildEthIPv4TCP(netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("8.8.8.8"), 1234, 443, []byte("x"), true),
+	}
+
+	// 未注入抓包器：正常处理，不应 panic
+	if !a.HandlePacket(pkt) {
+		t.Fatal("报文应被成功解析")
+	}
+
+	d := capture.NewDumper(t.TempDir())
+	a.Dumper = d
+	if _, err := d.Start(5); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !a.HandlePacket(pkt) {
+		t.Fatal("报文应被成功解析")
+	}
+	res, err := d.Stop()
+	if err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if res.Packets != 1 {
+		t.Fatalf("导出应包含 1 个包，实际 %d", res.Packets)
+	}
+	if res.Bytes != uint64(len(pkt.Raw)) {
+		t.Fatalf("导出字节数错误: %d != %d", res.Bytes, len(pkt.Raw))
+	}
+}

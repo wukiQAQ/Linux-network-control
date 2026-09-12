@@ -8,12 +8,14 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/wukiQAQ/Linux-network-control/internal/aggregator"
 	"github.com/wukiQAQ/Linux-network-control/internal/alert"
+	"github.com/wukiQAQ/Linux-network-control/internal/capture"
 	"github.com/wukiQAQ/Linux-network-control/internal/config"
 	"github.com/wukiQAQ/Linux-network-control/internal/flow"
 	"github.com/wukiQAQ/Linux-network-control/internal/storage"
@@ -25,7 +27,8 @@ type Server struct {
 	store   storage.Backend
 	table   *flow.Table
 	cfg     *config.Config
-	alerts  *alert.Engine // 可选告警引擎，nil 表示未启用
+	alerts  *alert.Engine   // 可选告警引擎，nil 表示未启用
+	dumper  *capture.Dumper // 可选按需抓包器，nil 表示未启用导出接口
 	started time.Time
 	ui      fs.FS
 }
@@ -39,6 +42,11 @@ func (s *Server) SetAlerts(e *alert.Engine) {
 	s.alerts = e
 }
 
+// SetDumper 注入按需抓包器（nil 表示不启用 pcap 导出接口）。
+func (s *Server) SetDumper(d *capture.Dumper) {
+	s.dumper = d
+}
+
 // Handler 返回路由。注意：静态页面注册在 "/"，精确 API 路径优先匹配。
 // 配置了 api.token 时，/api/ 前缀请求需要 Authorization: Bearer <token>。
 func (s *Server) Handler() http.Handler {
@@ -48,6 +56,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/sessions", s.handleSessions)
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	mux.HandleFunc("GET /api/v1/alerts", s.handleAlerts)
+	mux.HandleFunc("POST /api/v1/capture/dump", s.handleCaptureStart)
+	mux.HandleFunc("GET /api/v1/capture/dump", s.handleCaptureStatus)
+	mux.HandleFunc("GET /api/v1/capture/dump/file", s.handleCaptureFile)
 	mux.Handle("/", http.FileServerFS(s.ui))
 	h := http.Handler(logRequests(mux))
 	if s.cfg.APIToken != "" {
@@ -260,6 +271,72 @@ func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 		items = s.alerts.List(status)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"total": len(items), "items": items})
+}
+
+// handleCaptureStart 开始一次按需抓包，导出 N 秒的 pcap（供 Wireshark 分析）。
+// 参数：seconds（默认 10，范围 1~60）。同一时刻只允许一次导出。
+func (s *Server) handleCaptureStart(w http.ResponseWriter, r *http.Request) {
+	if s.dumper == nil {
+		httpError(w, http.StatusServiceUnavailable, "抓包导出未启用")
+		return
+	}
+	seconds := intParam(r, "seconds", 10)
+	res, err := s.dumper.Start(seconds)
+	if err != nil {
+		httpError(w, http.StatusConflict, "开始抓包失败: "+err.Error())
+		return
+	}
+	log.Printf("[api] 开始抓包导出 %s（%d 秒）", filepath.Base(res.File), res.Seconds)
+	writeJSON(w, http.StatusOK, capturePayload(res, true))
+}
+
+// handleCaptureStatus 查询抓包导出状态：active 表示仍在抓，ready 表示可以下载。
+func (s *Server) handleCaptureStatus(w http.ResponseWriter, _ *http.Request) {
+	if s.dumper == nil {
+		httpError(w, http.StatusServiceUnavailable, "抓包导出未启用")
+		return
+	}
+	res, active := s.dumper.Status()
+	writeJSON(w, http.StatusOK, capturePayload(res, active))
+}
+
+// handleCaptureFile 下载最近一次导出的 pcap 文件，可用 Wireshark 直接打开。
+func (s *Server) handleCaptureFile(w http.ResponseWriter, r *http.Request) {
+	if s.dumper == nil {
+		httpError(w, http.StatusServiceUnavailable, "抓包导出未启用")
+		return
+	}
+	res, active := s.dumper.Status()
+	if res.ID == "" || active {
+		httpError(w, http.StatusConflict, "当前没有可下载的抓包文件")
+		return
+	}
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filepath.Base(res.File)+`"`)
+	http.ServeFile(w, r, res.File)
+}
+
+// capturePayload 组装导出状态响应（文件名只给出基名，避免泄露服务器目录结构）。
+func capturePayload(res capture.DumpResult, active bool) map[string]any {
+	name := ""
+	if res.File != "" {
+		name = filepath.Base(res.File)
+	}
+	out := map[string]any{
+		"active":  active,
+		"ready":   !active && res.ID != "",
+		"id":      res.ID,
+		"file":    name,
+		"seconds": res.Seconds,
+		"packets": res.Packets,
+		"bytes":   res.Bytes,
+	}
+	if !res.Started.IsZero() {
+		out["started_at"] = res.Started.Format(time.RFC3339)
+	}
+	if !res.Ended.IsZero() {
+		out["ended_at"] = res.Ended.Format(time.RFC3339)
+	}
+	return out
 }
 
 func protoName(p uint8) string {

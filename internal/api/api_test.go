@@ -1,7 +1,9 @@
 package api
 
 import (
+	"encoding/binary"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/wukiQAQ/Linux-network-control/internal/aggregator"
 	"github.com/wukiQAQ/Linux-network-control/internal/alert"
+	"github.com/wukiQAQ/Linux-network-control/internal/capture"
 	"github.com/wukiQAQ/Linux-network-control/internal/config"
 	"github.com/wukiQAQ/Linux-network-control/internal/flow"
 	"github.com/wukiQAQ/Linux-network-control/internal/storage"
@@ -249,5 +252,121 @@ func TestAlertsAPI(t *testing.T) {
 	empty := do("?status=resolved")
 	if empty["total"].(float64) != 0 {
 		t.Fatalf("resolved 应无事件: %v", empty["total"])
+	}
+}
+
+// captureTestServer 返回已注入按需抓包器的测试服务。
+func captureTestServer(t *testing.T) (*httptest.Server, *capture.Dumper) {
+	t.Helper()
+	cfg := config.Default()
+	store, err := storage.OpenFileStore(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agg := aggregator.New(100)
+	table := flow.NewTable(time.Minute, 5*time.Minute, nil)
+	srv := New(cfg, agg, table, store, webui.FS)
+	d := capture.NewDumper(t.TempDir())
+	srv.SetDumper(d)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(func() { _ = store.Close() })
+	t.Cleanup(ts.Close)
+	return ts, d
+}
+
+// TestCaptureDumpAPI 覆盖"开始导出 → 查询状态 → 完成 → 下载 pcap"的完整流程。
+func TestCaptureDumpAPI(t *testing.T) {
+	ts, dumper := captureTestServer(t)
+
+	// 未开始导出时下载应 409
+	resp, err := http.Get(ts.URL + "/api/v1/capture/dump/file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("未导出时下载应返回 409，实际 %d", resp.StatusCode)
+	}
+
+	// 开始导出
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/capture/dump?seconds=10", nil)
+	startResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var start map[string]any
+	if err := json.NewDecoder(startResp.Body).Decode(&start); err != nil {
+		t.Fatal(err)
+	}
+	startResp.Body.Close()
+	if start["active"] != true || start["id"] == "" || start["seconds"] != float64(10) {
+		t.Fatalf("开始导出响应异常: %v", start)
+	}
+
+	// 模拟管道写入两帧
+	dumper.Write(&capture.Packet{Ts: time.Now().UTC(), Raw: []byte{1, 2, 3, 4, 5, 6}})
+	dumper.Write(&capture.Packet{Ts: time.Now().UTC(), Raw: []byte{7, 8, 9}})
+
+	var st map[string]any
+	getJSON(t, ts.URL+"/api/v1/capture/dump", &st)
+	if st["active"] != true || st["packets"] != float64(2) || st["bytes"] != float64(9) {
+		t.Fatalf("导出中状态异常: %v", st)
+	}
+
+	// 重复开始应 409
+	req2, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/capture/dump?seconds=10", nil)
+	r2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2.Body.Close()
+	if r2.StatusCode != http.StatusConflict {
+		t.Errorf("重复开始应返回 409，实际 %d", r2.StatusCode)
+	}
+
+	// 结束导出并下载
+	if _, err := dumper.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	var done map[string]any
+	getJSON(t, ts.URL+"/api/v1/capture/dump", &done)
+	if done["active"] != false || done["ready"] != true || done["packets"] != float64(2) {
+		t.Fatalf("结束后状态异常: %v", done)
+	}
+
+	fileResp, err := http.Get(ts.URL + "/api/v1/capture/dump/file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fileResp.Body.Close()
+	if fileResp.StatusCode != http.StatusOK {
+		t.Fatalf("下载状态 = %d", fileResp.StatusCode)
+	}
+	body, err := io.ReadAll(fileResp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := 24 + 16*2 + 9; len(body) != want {
+		t.Errorf("pcap 长度 = %d，期望 %d", len(body), want)
+	}
+	if len(body) >= 4 && binary.LittleEndian.Uint32(body[0:4]) != 0xa1b2c3d4 {
+		t.Errorf("pcap 魔数错误: %x", body[0:4])
+	}
+	if cd := fileResp.Header.Get("Content-Disposition"); !strings.Contains(cd, ".pcap") {
+		t.Errorf("Content-Disposition 异常: %q", cd)
+	}
+}
+
+// TestCaptureDumpDisabled 未注入抓包器时接口应返回 503 而不是 panic。
+func TestCaptureDumpDisabled(t *testing.T) {
+	ts, _ := newTestServer(t)
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/capture/dump", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("未启用抓包导出时应返回 503，实际 %d", resp.StatusCode)
 	}
 }
