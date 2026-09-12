@@ -74,8 +74,8 @@
         </div>
       </div>
       <div class="row">
-        <button class="btn primary grow" type="button" :disabled="connecting" @click="connect">
-          {{ connecting ? "连接中…" : connected ? "重新连接" : "连接" }}
+        <button class="btn primary grow" type="button" @click="connecting ? cancelConnect() : connect()">
+          {{ connectButtonLabel(connecting, connected) }}
         </button>
         <button class="btn" type="button" @click="saveProfile">保存</button>
         <button v-if="connected" class="btn danger" type="button" @click="disconnect">断开</button>
@@ -126,6 +126,17 @@
         <div v-for="(a, i) in firingAlerts.slice(0, 3)" :key="i" class="alert-item">
           {{ a.rule_id }} · {{ a.series }} 当前 {{ alertValue(a) }}（阈值 {{ alertThreshold(a) }}）
         </div>
+      </div>
+      <div class="row dash-tools">
+        <button class="btn" type="button" :disabled="capturing" @click="startCapture">
+          {{ capturing ? captureButtonText : "抓包导出（" + CAPTURE_SECONDS_DEFAULT + " 秒 pcap）" }}
+        </button>
+        <button class="btn" type="button" :disabled="!capturePath" @click="openCaptureInWireshark">
+          用 Wireshark 打开
+        </button>
+        <span class="muted small">
+          {{ capturePath ? "最近文件：" + capturePath : "抓包文件会下载到本机临时目录，可用 Wireshark 分析" }}
+        </span>
       </div>
       <div class="info-line muted">
           <span>机器：{{ now.machine_id || "-" }}</span>
@@ -222,12 +233,15 @@ import TrafficChart from "./components/TrafficChart.vue";
 import SessionTable from "./components/SessionTable.vue";
 import {
   apiGet,
+  apiPost,
   autostartDisable,
   autostartEnable,
   autostartIsEnabled,
   clearConnection,
   errText,
+  openInWireshark,
   ping,
+  saveCapture,
   setConnection,
 } from "./api.js";
 import { fmtDuration, fmtNum, fmtPps, fmtRate, fmtTs, normalizeBaseUrl } from "./format.js";
@@ -249,10 +263,26 @@ import {
 } from "./profiles.js";
 import { loadSettings, saveSettings } from "./settings.js";
 import { connectMessage, statusView } from "./status.js";
+import { LIVE_MAX_POINTS, mergeLiveSample } from "./livechart.js";
+import {
+  CAPTURE_SECONDS_DEFAULT,
+  captureDoneText,
+  captureProgressText,
+  clampCaptureSeconds,
+} from "./capture.js";
+import {
+  cancelAttempt,
+  cancelNotice,
+  connectButtonLabel,
+  isCurrentAttempt,
+  newAttemptToken,
+  startAttempt,
+} from "./connect.js";
 
 const STORE_KEY = PROFILE_STORE_KEY;
 const CHART_KEY = "netmon.chartMode";
 const pageSize = 20;
+const HISTORY_STEP = 10; // 历史曲线分桶粒度（秒），越小曲线越细
 const appWindow = getCurrentWindow();
 
 const nav = ref("accounts");
@@ -285,6 +315,17 @@ const sessPage = ref(1);
 const sessLoading = ref(false);
 const sessFilter = reactive({ ip: "", proto: "" });
 const firingAlerts = ref([]);
+// 连接取消令牌：取消后本次连接流程的所有后续结果都会被忽略
+const attempt = newAttemptToken();
+// 抓包导出（Wireshark）状态
+const capturing = ref(false);
+const captureStatus = ref(null);
+const capturePath = ref("");
+const captureButtonText = computed(() =>
+  captureStatus.value && captureStatus.value.active
+    ? captureProgressText(captureStatus.value, CAPTURE_SECONDS_DEFAULT)
+    : "抓包中…",
+);
 
 const toast = reactive({ show: false, type: "ok", text: "" });
 let toastTimer = null;
@@ -603,17 +644,20 @@ async function connect() {
     pushLog("校验失败：" + norm.error);
     return;
   }
+  const seq = startAttempt(attempt);
   const label = form.name || norm.url;
   connecting.value = true;
-  setBanner("busy", "正在连接 " + label + " …");
+  setBanner("busy", "正在连接 " + label + " …（可点「取消连接」中断）");
   pushLog("地址校验通过：" + norm.url);
   notify({ type: "ok", text: "正在连接 " + label + " …" });
   try {
     pushLog("调用内核：set_connection");
     await withTimeout(setConnection(norm.url, form.token), 10000, "初始化连接");
+    if (!isCurrentAttempt(attempt, seq)) return;
     pushLog("内核 set_connection 完成");
     pushLog("请求实时数据 /api/v1/traffic/now");
     await withTimeout(apiGet("/api/v1/traffic/now"), 15000, "请求实时数据");
+    if (!isCurrentAttempt(attempt, seq)) return;
     pushLog("实时数据请求成功");
     connected.value = true;
     failCount = 0;
@@ -630,6 +674,7 @@ async function connect() {
     startTimers();
     await Promise.all([refreshNow(), refreshHistory(), loadSessions(1), refreshAlerts()]);
   } catch (e) {
+    if (!isCurrentAttempt(attempt, seq)) return; // 已取消，失败结果直接丢弃
     connected.value = false;
     const reason = errText(e);
     setBanner("err", "连接失败：" + reason);
@@ -637,8 +682,19 @@ async function connect() {
     notify(connectMessage("err", label, reason));
     stopTimers();
   } finally {
-    connecting.value = false;
+    if (isCurrentAttempt(attempt, seq)) connecting.value = false;
   }
+}
+
+// 连接过程中点「取消连接」：让本次尝试的序号失效，后续结果全部忽略
+function cancelConnect() {
+  if (!connecting.value) return;
+  cancelAttempt(attempt);
+  connecting.value = false;
+  setBanner("idle", "已取消连接");
+  pushLog("已取消连接（已在途的请求会在后台结束，结果被忽略）");
+  notify(cancelNotice(form.name || form.base));
+  clearConnection().catch(() => {});
 }
 
 async function disconnect() {
@@ -654,10 +710,74 @@ async function disconnect() {
   }
 }
 
+// ---------------- 抓包导出（Wireshark 联动） ----------------
+// 服务端抓 N 秒 -> 下载到本机临时目录 -> 用 Wireshark 打开
+async function startCapture() {
+  if (!connected.value || capturing.value) return;
+  const seconds = clampCaptureSeconds(CAPTURE_SECONDS_DEFAULT);
+  capturing.value = true;
+  captureStatus.value = null;
+  setBanner("busy", "正在抓包 " + seconds + " 秒…");
+  pushLog("开始导出抓包（" + seconds + " 秒），结束后自动下载");
+  try {
+    await withTimeout(apiPost("/api/v1/capture/dump?seconds=" + seconds), 10000, "开始抓包");
+    await waitCaptureDone(seconds);
+    const path = await withTimeout(saveCapture("/api/v1/capture/dump/file"), 30000, "下载抓包文件");
+    capturePath.value = path;
+    setBanner("ok", captureDoneText(captureStatus.value) + "，已保存到本机");
+    pushLog("抓包已保存：" + path);
+    await openCaptureInWireshark();
+  } catch (e) {
+    const reason = errText(e);
+    setBanner("err", "抓包失败：" + reason);
+    pushLog("抓包失败：" + reason);
+  } finally {
+    capturing.value = false;
+  }
+}
+
+async function refreshCaptureStatus() {
+  try {
+    const st = await apiGet("/api/v1/capture/dump");
+    captureStatus.value = st;
+    if (st && st.active) setBanner("busy", captureProgressText(st, CAPTURE_SECONDS_DEFAULT));
+    return st;
+  } catch {
+    return null;
+  }
+}
+
+async function waitCaptureDone(seconds) {
+  const deadline = Date.now() + (Number(seconds) + 15) * 1000;
+  while (Date.now() < deadline) {
+    const st = await refreshCaptureStatus();
+    if (st && !st.active && st.ready) return st;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  throw new Error("抓包超时，请稍后重试");
+}
+
+async function openCaptureInWireshark() {
+  if (!capturePath.value) {
+    setBanner("err", "还没有抓包文件，请先点「抓包导出」");
+    return;
+  }
+  try {
+    const msg = await openInWireshark(capturePath.value);
+    setBanner("ok", msg);
+    pushLog(msg);
+  } catch (e) {
+    const reason = errText(e);
+    setBanner("err", "打开失败：" + reason + "（文件已保存到 " + capturePath.value + "）");
+    pushLog("打开 Wireshark 失败：" + reason);
+  }
+}
+
 function startTimers() {
   stopTimers();
   nowTimer = setInterval(refreshNow, 1000);
-  historyTimer = setInterval(refreshHistory, 5000);
+  // 曲线与 KPI 同步：历史数据每 2 秒重建一次，实时点每秒补一次（见 refreshNow）
+  historyTimer = setInterval(refreshHistory, 2000);
   sessionTimer = setInterval(() => loadSessions(sessPage.value), 8000);
   alertTimer = setInterval(refreshAlerts, 5000);
   snapshotTimer = setInterval(() => {
@@ -698,6 +818,15 @@ async function refreshNow() {
     Object.keys(now).forEach((k) => delete now[k]);
     Object.assign(now, data);
     failCount = 0;
+    // 让曲线末尾与上方 KPI 数值保持一致：把这次实时采样并入曲线
+    const tsMs = Date.parse(now.ts || "");
+    if (Number.isFinite(tsMs)) {
+      history.value = mergeLiveSample(
+        history.value,
+        { t: Math.floor(tsMs / 1000), bps: Number(now.bps) || 0, pps: Number(now.pps) || 0 },
+        { step: HISTORY_STEP, maxPoints: LIVE_MAX_POINTS },
+      );
+    }
   } catch (e) {
     failCount += 1;
     if (failCount >= 4) {
@@ -711,7 +840,7 @@ async function refreshNow() {
 }
 async function refreshHistory() {
   try {
-    const data = await apiGet("/api/v1/traffic/history?since=3600&step=60");
+    const data = await apiGet("/api/v1/traffic/history?since=3600&step=" + HISTORY_STEP);
     history.value = (data && data.points) || [];
   } catch {
     // 轮询失败统一处理

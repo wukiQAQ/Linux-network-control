@@ -1,0 +1,41 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  CAPTURE_SECONDS_DEFAULT,
+  CAPTURE_SECONDS_MAX,
+  CAPTURE_SECONDS_MIN,
+  captureDoneText,
+  captureFileName,
+  captureProgressText,
+  clampCaptureSeconds,
+} from "../src/capture.js";
+
+test("clampCaptureSeconds 夹取范围", () => {
+  assert.equal(clampCaptureSeconds(0), CAPTURE_SECONDS_DEFAULT);
+  assert.equal(clampCaptureSeconds(-5), CAPTURE_SECONDS_DEFAULT);
+  assert.equal(clampCaptureSeconds("abc"), CAPTURE_SECONDS_DEFAULT);
+  assert.equal(clampCaptureSeconds(0.4), CAPTURE_SECONDS_DEFAULT);
+  assert.equal(clampCaptureSeconds(1), CAPTURE_SECONDS_MIN);
+  assert.equal(clampCaptureSeconds(15), 15);
+  assert.equal(clampCaptureSeconds(9999), CAPTURE_SECONDS_MAX);
+});
+
+test("captureProgressText 展示包数与剩余时间", () => {
+  const status = { packets: 3, bytes: 1200, started_at: new Date().toISOString() };
+  const text = captureProgressText(status, 15);
+  assert.match(text, /已捕获 3 包/);
+  assert.match(text, /1200 字节/);
+  assert.match(text, /剩余约 1[45] 秒/);
+});
+
+test("captureProgressText 容错空状态", () => {
+  const text = captureProgressText(null, 0);
+  assert.match(text, /已捕获 0 包/);
+  assert.match(text, /剩余约 15 秒/);
+});
+
+test("captureDoneText 与 captureFileName", () => {
+  assert.equal(captureDoneText({ packets: 10, bytes: 2048 }), "抓包完成：10 包 / 2048 字节");
+  assert.equal(captureFileName({ file: "capture-1.pcap" }), "capture-1.pcap");
+  assert.equal(captureFileName(null), "");
+});

@@ -60,10 +60,11 @@ fn clear_connection(state: State<'_, ApiState>) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-async fn api_get(state: State<'_, ApiState>, path: String) -> Result<Value, String> {
+// 统一的远程请求实现：api_get / api_post 共用（POST 不带请求体）。
+async fn request_json(state: &ApiState, path: String, post: bool) -> Result<Value, String> {
     let started = Instant::now();
-    log_line(&format!("api_get start path={path}"));
+    let method = if post { "POST" } else { "GET" };
+    log_line(&format!("{method} start path={path}"));
     let conn = {
         let guard = state
             .conn
@@ -74,7 +75,7 @@ async fn api_get(state: State<'_, ApiState>, path: String) -> Result<Value, Stri
     let conn = match conn {
         Some(c) => c,
         None => {
-            log_line("api_get err: 尚未配置服务器连接");
+            log_line("request err: 尚未配置服务器连接");
             return Err("尚未配置服务器连接".to_string());
         }
     };
@@ -88,7 +89,11 @@ async fn api_get(state: State<'_, ApiState>, path: String) -> Result<Value, Stri
             "/api/v1/traffic/now"
         }
     );
-    let mut req = state.client.get(&full);
+    let mut req = if post {
+        state.client.post(&full)
+    } else {
+        state.client.get(&full)
+    };
     if !conn.token.is_empty() {
         req = req.header(AUTHORIZATION, format!("Bearer {}", conn.token));
     }
@@ -97,7 +102,7 @@ async fn api_get(state: State<'_, ApiState>, path: String) -> Result<Value, Stri
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             log_line(&format!(
-                "api_get done path={path} status={} elapsed_ms={}",
+                "{method} done path={path} status={} elapsed_ms={}",
                 status.as_u16(),
                 started.elapsed().as_millis()
             ));
@@ -105,18 +110,129 @@ async fn api_get(state: State<'_, ApiState>, path: String) -> Result<Value, Stri
                 return Err(format!("HTTP {}: {}", status.as_u16(), friendly_body(&body)));
             }
             serde_json::from_str(&body).map_err(|e| {
-                log_line(&format!("api_get parse err: {e}"));
+                log_line(&format!("{method} parse err: {e}"));
                 format!("响应解析失败: {e}")
             })
         }
         Err(e) => {
             log_line(&format!(
-                "api_get err path={path} elapsed_ms={} err={e}",
+                "{method} err path={path} elapsed_ms={} err={e}",
                 started.elapsed().as_millis()
             ));
             Err(format!("请求失败: {e}"))
         }
     }
+}
+
+#[tauri::command]
+async fn api_get(state: State<'_, ApiState>, path: String) -> Result<Value, String> {
+    request_json(&state, path, false).await
+}
+
+// POST 命令（无请求体）：用于开始抓包等动作类接口。
+#[tauri::command]
+async fn api_post(state: State<'_, ApiState>, path: String) -> Result<Value, String> {
+    request_json(&state, path, true).await
+}
+
+// 把服务端的抓包文件下载到本机临时目录（%TEMP%\MeTD-captures），返回保存路径。
+#[tauri::command]
+async fn save_capture(state: State<'_, ApiState>, path: String) -> Result<String, String> {
+    let conn = {
+        let guard = state
+            .conn
+            .lock()
+            .map_err(|_| "连接状态锁获取失败".to_string())?;
+        guard.clone()
+    };
+    let conn = conn.ok_or_else(|| "尚未配置服务器连接".to_string())?;
+    let url = format!(
+        "{}{}",
+        conn.base.trim_end_matches('/'),
+        if path.starts_with('/') { path.as_str() } else { "" }
+    );
+    let mut req = state.client.get(&url);
+    if !conn.token.is_empty() {
+        req = req.header(AUTHORIZATION, format!("Bearer {}", conn.token));
+    }
+    let resp = req.send().await.map_err(|e| format!("下载失败: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("下载失败: HTTP {}", resp.status().as_u16()));
+    }
+    let bytes = resp.bytes().await.map_err(|e| format!("读取响应失败: {e}"))?;
+    let dir = std::env::temp_dir().join("MeTD-captures");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let dest = dir.join(format!("metd-capture-{stamp}.pcap"));
+    std::fs::write(&dest, &bytes).map_err(|e| format!("保存文件失败: {e}"))?;
+    log_line(&format!("save_capture {} bytes -> {}", bytes.len(), dest.display()));
+    Ok(dest.to_string_lossy().to_string())
+}
+
+// 在注册表里查 Wireshark 安装路径（Windows 的标准登记位置，兼容装在 D 盘等情况）。
+fn wireshark_from_registry() -> Option<String> {
+    const KEYS: [&str; 3] = [
+        r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\Wireshark.exe",
+        r"HKLM\SOFTWARE\Wireshark",
+        r"HKCU\SOFTWARE\Wireshark",
+    ];
+    for key in KEYS {
+        let output = match std::process::Command::new("reg").args(["query", key, "/ve"]).output() {
+            Ok(o) => o,
+            Err(_) => continue,
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        for token in text.split_whitespace() {
+            let t = token.trim().trim_matches('"');
+            let lower = t.to_lowercase();
+            if lower.ends_with("wireshark.exe") && std::path::Path::new(t).exists() {
+                return Some(t.to_string());
+            }
+            if lower.len() > 3 && lower.as_bytes()[1] == b':' && lower.as_bytes()[2] == b'\\' {
+                let candidate = std::path::Path::new(t).join("Wireshark.exe");
+                if candidate.exists() {
+                    return Some(candidate.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+// 用 Wireshark 打开本地 pcap 文件；找不到 Wireshark 时退回系统默认程序。
+#[tauri::command]
+fn open_in_wireshark(path: String) -> Result<String, String> {
+    if !std::path::Path::new(&path).exists() {
+        return Err("抓包文件不存在".to_string());
+    }
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(p) = wireshark_from_registry() {
+        candidates.push(p);
+    }
+    candidates.push("wireshark.exe".to_string());
+    candidates.push(r"C:\Program Files\Wireshark\Wireshark.exe".to_string());
+    candidates.push(r"C:\Program Files (x86)\Wireshark\Wireshark.exe".to_string());
+    for exe in candidates {
+        if std::process::Command::new(&exe).arg(&path).spawn().is_ok() {
+            log_line(&format!("opened in wireshark via {exe}: {path}"));
+            return Ok(format!("已用 Wireshark 打开：{path}"));
+        }
+    }
+    if std::process::Command::new("cmd")
+        .args(["/C", "start", "", path.as_str()])
+        .spawn()
+        .is_ok()
+    {
+        log_line(&format!("wireshark not found, opened by default app: {path}"));
+        return Ok(format!("未找到 Wireshark，已用系统默认程序打开：{path}"));
+    }
+    Err(format!("未找到 Wireshark，请手动打开文件：{path}"))
 }
 
 fn friendly_body(body: &str) -> String {
@@ -205,7 +321,10 @@ pub fn run() {
             ping,
             set_connection,
             clear_connection,
-            api_get
+            api_get,
+            api_post,
+            save_capture,
+            open_in_wireshark
         ])
         .run(tauri::generate_context!())
         .expect("tauri 应用启动失败");
