@@ -12,12 +12,30 @@
 
 ## 项目状态
 
-- **当前阶段**：V0.5.4（告警引擎 + 多开标签页 + 单实例运行）
+- **当前阶段**：V0.6.0（面积图/柱状图修复 + 图表缩放 + 账号管理自动记录）
 - **技术方向**：Go 语言采集端（AF_PACKET / libpcap）+ Rust/Tauri + Vue 3 桌面客户端（MeTD）
 - **架构分层**：采集 → 解析 → 聚合 → 存储 → API → 展示（网页 / 桌面客户端）→ 告警
 - **存储**：SQLite（默认，纯 Go 驱动 modernc.org/sqlite），可切换 JSONL（file）
 - **数据源**：synthetic 合成 / pcap 回放 / Linux AF_PACKET 真实抓包
 - **远程访问**：Linux 端可选 Bearer Token 鉴权；Windows 客户端跨 IP 连接
+
+## 如何使用（快速上手）
+
+完整的图文步骤见 **[使用指南](docs/使用指南.md)**，下面是两条最短路径：
+
+```powershell
+# 1) 本机看效果（合成流量，无需 Linux / 无需管理员权限）
+cd "D:\Codex\Linux network control"
+go run ./cmd/netmon            # 浏览器打开 http://localhost:8080
+```
+
+```text
+# 2) 监控真实 Linux 服务器
+① 在 Linux 上运行采集端：sudo ./netmon-linux -config config.toml   （默认监听 :8080）
+② 打开 Windows 客户端 MeTD（client/src-tauri/target/release/metd.exe）
+③ 左侧「账号管理」填 Linux 的 IP:8080（有令牌就一起填）→ 点「连接」
+④ 连接成功后即可查看实时 KPI、历史曲线（折线/面积/柱状，可放大缩小）、会话明细与告警横幅
+```
 
 ## 模块整合总览
 
@@ -35,12 +53,14 @@ internal/config/         # TOML 配置加载（含 api.token）
 client/                  # Windows 桌面客户端 MeTD（Tauri 2 + Vue 3 + ECharts）
   src/                   #   Vue 界面：连接管理 / KPI / 历史曲线 / 会话明细 / 健康
   src-tauri/             #   Rust 侧：reqwest 远程访问、令牌持有、命令层
-  test/                  #   前端纯函数单元测试（node --test）
+  src/profiles.js        #   账号管理纯逻辑：连过的 IP 自动记入、按地址去重、最近连接时间
+  src/chartzoom.js       #   历史曲线缩放区间计算（放大 / 缩小 / 重置）
+  test/                  #   前端单元测试（node --test，41 个用例）
 docs/                    # 产品设计 / 技术方案 / 系统设计 / 源码讲解 / 版本记录
 demo/index.html          # 纯前端界面演示（模拟数据，评估交互用）
 ```
 
-## 已实现功能（V0.3）
+## 已实现功能
 
 ### Linux 端（Go Agent）
 - 实时指标（带宽 bps / 包速率 pps / 并发连接数），1s 轮询刷新
@@ -48,6 +68,7 @@ demo/index.html          # 纯前端界面演示（模拟数据，评估交互�
 - 历史曲线：指标持久化，重启不丢
 - 自身健康：收包/丢包数、丢包率、流表大小，丢包页面提示
 - 存储：SQLite（WAL、保留策略清理）；pcap 回放全功能可离线测试
+- 网页仪表盘：带宽/包速率曲线支持折线 / 面积 / 柱状切换，以及放大 / 缩小 / 重置与鼠标滚轮缩放
 - Linux 真实抓包入口（`source = "live"`，需 root / CAP_NET_RAW）
 - 可选 Bearer Token 鉴权：`[api] token = "..."` 后，`/api/` 请求需携带 `Authorization: Bearer <token>`
 
@@ -58,6 +79,7 @@ demo/index.html          # 纯前端界面演示（模拟数据，评估交互�
 - 请求统一经 Rust 命令层（reqwest）访问远程 API，令牌保存在进程状态，规避 CORS
 - **V0.4 UI 升级**：程序更名 **MeTD**（蓝色小猫图标）；历史曲线支持折线/面积/柱状三种图表手动切换；设置区提供夜间/明亮主题切换，界面与图表配色随主题变化并本地记忆
 - **V0.4.1**：齿轮设置中心（主题/透明度/自定义背景/自启/托盘）、系统托盘常驻、账号一键切换并自动刷新、左侧图标导航（悬停放大+文字提示）
+- **V0.6.0**：修复面积图/柱状图切换（此前 `setChartMode` 未定义，点击无反应）、历史曲线新增放大/缩小/重置与鼠标滚轮缩放、连接成功后自动把该 IP 记入账号管理（按地址去重并显示"最近连接"时间）
 
 ## 路线图
 
@@ -70,6 +92,7 @@ demo/index.html          # 纯前端界面演示（模拟数据，评估交互�
 | V0.4.1 ✅ | 齿轮设置中心、系统托盘、账号一键切换、图标导航（已实现） |
 | V0.5 ✅ | 自定义应用图标（用户图片去白边），V2 能力线开发开启（已实现） |
 | V0.5.1 ✅ | 告警引擎（阈值+持续时长状态机、Webhook、/api/v1/alerts、客户端告警横幅）（已实现） |
+| V0.6.0 ✅ | MeTD 图表样式修复与缩放、账号管理自动记录、使用指南重写（已实现） |
 | V2 | 告警引擎、TOP N、协议分布、IPv6、多队列抓包、WebSocket、鉴权细化、界面插件框架 |
 | V3 | 客户端增强：WebSocket 实时推送、多机对比、Windows 通知、帮助中心型 AI |
 | V4 | 流量控制：Linux 端 tc 限速（仅本机流量，默认关闭 + 二次确认）+ 控制 API/界面 |
@@ -111,7 +134,7 @@ npx tauri build            # 产物：client/src-tauri/target/release/metd.exe�
 # Go 端（Linux Agent）
 go vet ./... && go test ./...
 
-# 前端纯函数单元测试
+# 前端单元测试（格式化 / 状态 / 设置 / 标签页 / 账号管理 / 图表缩放 / 模板处理器，共 41 个用例）
 cd client && npm test
 ```
 
