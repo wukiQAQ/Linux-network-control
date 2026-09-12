@@ -32,7 +32,7 @@ go run ./cmd/netmon            # 浏览器打开 http://localhost:8080
 ```text
 # 2) 监控真实 Linux 服务器
 ① 在 Linux 上运行采集端：sudo ./netmon-linux -config config.toml   （默认监听 :8080）
-② 打开 Windows 客户端 MeTD（client/src-tauri/target/release/metd.exe）
+② 打开 Windows 客户端 MeTD（client/src-tauri/target/release/metd.exe；自行构建请用 npm run build:app，不要直接 cargo build）
 ③ 左侧「账号管理」填 Linux 的 IP:8080（有令牌就一起填）→ 点「连接」
 ④ 连接成功后即可查看实时 KPI、历史曲线（折线/面积/柱状，可放大缩小）、会话明细与告警横幅
 ```
