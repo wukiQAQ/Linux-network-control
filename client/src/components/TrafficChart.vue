@@ -19,14 +19,9 @@
           <template v-if="m.value === 'line'">
             <polyline points="3,17 8,9 13,13 21,5" />
           </template>
-          <template v-else-if="m.value === 'area'">
+          <template v-else>
             <path d="M3 17 L8 9 L13 13 L21 5 L21 20 L3 20 Z" fill="currentColor" opacity="0.28" stroke="none" />
             <polyline points="3,17 8,9 13,13 21,5" />
-          </template>
-          <template v-else>
-            <rect x="4" y="13" width="4" height="7" rx="1" />
-            <rect x="10" y="8" width="4" height="12" rx="1" />
-            <rect x="16" y="4" width="4" height="16" rx="1" />
           </template>
         </svg>
         <span>{{ m.label }}</span>
@@ -37,14 +32,25 @@
       <button class="mode-btn" type="button" title="恢复完整时间范围" @click="applyZoom('reset')">重置</button>
       <span class="muted zoom-info">{{ zoomText }}</span>
     </div>
+    <div class="chart-toolbar axis-row">
+      <span class="muted axis-label">左轴上限</span>
+      <input v-model="axisForm.mbps" class="axis-input" inputmode="decimal" placeholder="自动" @change="applyAxis" />
+      <span class="muted axis-unit">Mb/s</span>
+      <span class="muted axis-label">右轴上限</span>
+      <input v-model="axisForm.pps" class="axis-input" inputmode="decimal" placeholder="自动" @change="applyAxis" />
+      <span class="muted axis-unit">pps</span>
+      <button class="mode-btn" type="button" title="清空手动值，恢复自动坐标轴" @click="resetAxis">自动</button>
+      <span class="muted zoom-info">{{ axisText }}</span>
+    </div>
     <div ref="el" class="chart"></div>
   </div>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import * as echarts from "echarts";
 import { clampRange, zoomLabel, zoomRange } from "../chartzoom.js";
+import { AXIS_STORE_KEY, axisHint, axisMax, autoAxisMax, normalizeAxisConfig, parseAxisInput } from "../axis.js";
 
 const props = defineProps({
   points: { type: Array, default: () => [] },
@@ -75,11 +81,43 @@ function onDataZoom() {
   zoom.value = next;
 }
 
+// 曲线样式：只保留折线与面积（柱状图已按需求移除）
 const modes = [
   { value: "line", label: "折线图" },
   { value: "area", label: "面积图" },
-  { value: "bar", label: "柱状图" },
 ];
+
+// 左右坐标轴手动上限：留空 = 自动（按量级取整，不会一直跳动）
+function loadAxisConfig() {
+  try {
+    return normalizeAxisConfig(JSON.parse(localStorage.getItem(AXIS_STORE_KEY) || "{}"));
+  } catch {
+    return normalizeAxisConfig({});
+  }
+}
+const axisConfig = ref(loadAxisConfig());
+const axisForm = reactive({ mbps: axisConfig.value.mbps ?? "", pps: axisConfig.value.pps ?? "" });
+const axisText = computed(() => axisHint(axisConfig.value));
+
+function applyAxis() {
+  axisConfig.value = normalizeAxisConfig({
+    mbps: parseAxisInput(axisForm.mbps, 1e6),
+    pps: parseAxisInput(axisForm.pps, 1e9),
+  });
+  axisForm.mbps = axisConfig.value.mbps ?? "";
+  axisForm.pps = axisConfig.value.pps ?? "";
+  try {
+    localStorage.setItem(AXIS_STORE_KEY, JSON.stringify(axisConfig.value));
+  } catch {
+    // 忽略存储失败
+  }
+}
+
+function resetAxis() {
+  axisForm.mbps = "";
+  axisForm.pps = "";
+  applyAxis();
+}
 
 const palette = computed(() =>
   props.theme === "light"
@@ -111,7 +149,7 @@ const palette = computed(() =>
       },
 );
 
-function buildOption(points, mode, p, z) {
+function buildOption(points, mode, p, z, a) {
   const times = points.map((pt) => new Date(pt.t * 1000));
   const bps = points.map((pt) => Number(pt.bps || 0));
   const pps = points.map((pt) => Number(pt.pps || 0));
@@ -128,26 +166,7 @@ function buildOption(points, mode, p, z) {
   });
 
   let series;
-  if (mode === "bar") {
-    // 柱状图：带宽与包速率都用柱形（双 Y 轴），明显区别于折线
-    series = [
-      {
-        name: "带宽",
-        type: "bar",
-        barMaxWidth: 14,
-        itemStyle: { color: p.bps, opacity: 0.85, borderRadius: [3, 3, 0, 0] },
-        data: times.map((t, i) => [t, bps[i]]),
-      },
-      {
-        name: "包速率",
-        type: "bar",
-        yAxisIndex: 1,
-        barMaxWidth: 14,
-        itemStyle: { color: p.pps, opacity: 0.7, borderRadius: [3, 3, 0, 0] },
-        data: times.map((t, i) => [t, pps[i]]),
-      },
-    ];
-  } else if (mode === "area") {
+  if (mode === "area") {
     const bpsSeries = lineSeries(
       "带宽",
       times.map((t, i) => [t, bps[i]]),
@@ -168,6 +187,10 @@ function buildOption(points, mode, p, z) {
       lineSeries("包速率", times.map((t, i) => [t, pps[i]]), p.pps, 1),
     ];
   }
+
+  // 坐标轴上限：手动值优先；自动时按量级取整，数字只在跨档位时变化
+  const leftMax = a && a.left !== undefined ? a.left : autoAxisMax(Math.max(0, ...bps));
+  const rightMax = a && a.right !== undefined ? a.right : autoAxisMax(Math.max(0, ...pps));
 
   return {
     backgroundColor: "transparent",
@@ -197,6 +220,8 @@ function buildOption(points, mode, p, z) {
       {
         type: "value",
         name: "带宽",
+        min: 0,
+        max: leftMax,
         nameTextStyle: { color: p.label },
         axisLabel: { color: p.label, formatter: (v) => (v / 1e6).toFixed(0) + " Mb" },
         splitLine: { lineStyle: { color: p.split } },
@@ -204,6 +229,8 @@ function buildOption(points, mode, p, z) {
       {
         type: "value",
         name: "pps",
+        min: 0,
+        max: rightMax,
         nameTextStyle: { color: p.label },
         axisLabel: { color: p.label },
         splitLine: { show: false },
@@ -229,7 +256,7 @@ function buildOption(points, mode, p, z) {
 
 function render() {
   if (!chart) return;
-  chart.setOption(buildOption(props.points || [], props.mode, palette.value, zoom.value), true);
+  chart.setOption(buildOption(props.points || [], props.mode, palette.value, zoom.value, axisMax(axisConfig.value)), true);
   const last = (props.points || []).at(-1);
   updatedText.value = last ? "更新于 " + new Date(last.t * 1000).toLocaleTimeString() : "";
 }
@@ -251,7 +278,7 @@ onBeforeUnmount(() => {
     chart = null;
   }
 });
-watch(() => [props.points, props.theme, props.mode, zoom.value], render);
+watch(() => [props.points, props.theme, props.mode, zoom.value, axisConfig.value], render);
 </script>
 
 <style scoped>
@@ -274,6 +301,20 @@ watch(() => [props.points, props.theme, props.mode, zoom.value], render);
 .mode-btn.active { background: var(--accent); border-color: var(--accent); color: #06222b; font-weight: 600; }
 .mode-ico { width: 16px; height: 16px; }
 .tool-sep { width: 1px; height: 18px; background: var(--line); margin: 0 2px; }
+.axis-row { align-items: center; flex-wrap: wrap; gap: 6px; }
+.axis-label { font-size: 12px; }
+.axis-unit { font-size: 11px; }
+.axis-input {
+  width: 84px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 3px 7px;
+  font-size: 12px;
+  outline: none;
+}
+.axis-input:focus { border-color: var(--accent); }
 .chart { height: 300px; width: 100%; }
 .zoom-info { font-size: 11px; align-self: center; }
 </style>

@@ -128,14 +128,20 @@
         </div>
       </div>
       <div class="row dash-tools">
-        <button class="btn" type="button" :disabled="capturing" @click="startCapture">
+        <button class="btn" type="button" :disabled="capturing || !captureSupportInfo.ok" @click="startCapture">
           {{ capturing ? captureButtonText : "抓包导出（" + CAPTURE_SECONDS_DEFAULT + " 秒 pcap）" }}
         </button>
         <button class="btn" type="button" :disabled="!capturePath" @click="openCaptureInWireshark">
           用 Wireshark 打开
         </button>
-        <span class="muted small">
-          {{ capturePath ? "最近文件：" + capturePath : "抓包文件会下载到本机临时目录，可用 Wireshark 分析" }}
+        <span class="muted small" :class="{ warn: !captureSupportInfo.ok }">
+          {{
+            !captureSupportInfo.ok
+              ? captureSupportInfo.hint
+              : capturePath
+                ? "最近文件：" + capturePath
+                : "抓包文件会下载到本机临时目录，可用 Wireshark 分析"
+          }}
         </span>
       </div>
       <div class="info-line muted">
@@ -263,10 +269,13 @@ import {
 } from "./profiles.js";
 import { loadSettings, saveSettings } from "./settings.js";
 import { connectMessage, statusView } from "./status.js";
+import { chartModeLabel, normalizeChartMode } from "./chartmode.js";
+import { captureSupport } from "./capability.js";
 import { LIVE_MAX_POINTS, mergeLiveSample } from "./livechart.js";
 import {
   CAPTURE_SECONDS_DEFAULT,
   captureDoneText,
+  captureErrorText,
   captureProgressText,
   clampCaptureSeconds,
 } from "./capture.js";
@@ -321,6 +330,8 @@ const attempt = newAttemptToken();
 const capturing = ref(false);
 const captureStatus = ref(null);
 const capturePath = ref("");
+// 服务端能力：旧版 Linux 端没有抓包接口时提前提示，而不是等报 404
+const captureSupportInfo = computed(() => captureSupport(now));
 const captureButtonText = computed(() =>
   captureStatus.value && captureStatus.value.active
     ? captureProgressText(captureStatus.value, CAPTURE_SECONDS_DEFAULT)
@@ -346,15 +357,14 @@ const kernelText = computed(() =>
 
 function loadChartMode() {
   try {
-    const m = localStorage.getItem(CHART_KEY);
-    return ["line", "area", "bar"].includes(m) ? m : "line";
+    return normalizeChartMode(localStorage.getItem(CHART_KEY));
   } catch {
     return "line";
   }
 }
 // 切换历史曲线样式（折线 / 面积 / 柱状），选择结果本地记忆
 function setChartMode(mode) {
-  const m = ["line", "area", "bar"].includes(mode) ? mode : "line";
+  const m = normalizeChartMode(mode);
   if (m === chartMode.value) return;
   chartMode.value = m;
   try {
@@ -362,7 +372,7 @@ function setChartMode(mode) {
   } catch {
     // 忽略存储失败
   }
-  pushLog("图表切换：" + { line: "折线图", area: "面积图", bar: "柱状图" }[m]);
+  pushLog("图表切换：" + chartModeLabel(m));
 }
 function loadProfiles() {
   try {
@@ -714,6 +724,11 @@ async function disconnect() {
 // 服务端抓 N 秒 -> 下载到本机临时目录 -> 用 Wireshark 打开
 async function startCapture() {
   if (!connected.value || capturing.value) return;
+  if (!captureSupportInfo.value.ok) {
+    setBanner("err", captureSupportInfo.value.hint);
+    pushLog(captureSupportInfo.value.hint);
+    return;
+  }
   const seconds = clampCaptureSeconds(CAPTURE_SECONDS_DEFAULT);
   capturing.value = true;
   captureStatus.value = null;
@@ -728,7 +743,7 @@ async function startCapture() {
     pushLog("抓包已保存：" + path);
     await openCaptureInWireshark();
   } catch (e) {
-    const reason = errText(e);
+    const reason = captureErrorText(errText(e));
     setBanner("err", "抓包失败：" + reason);
     pushLog("抓包失败：" + reason);
   } finally {

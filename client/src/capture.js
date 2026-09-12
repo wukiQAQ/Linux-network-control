@@ -35,3 +35,13 @@ export function captureFileName(status) {
   const s = status && typeof status === "object" ? status : {};
   return typeof s.file === "string" ? s.file : "";
 }
+
+// 把抓包过程中的错误翻译成可操作的提示，避免只显示 "HTTP 404"。
+export function captureErrorText(err) {
+  const text = String(err || "");
+  if (text.includes("404")) return "服务端版本过旧：没有抓包接口，请把 Linux 端更新到 V0.7.0 及以上";
+  if (text.includes("409")) return "已有抓包任务在进行中，请等它结束后重试";
+  if (text.includes("503")) return "服务端未启用抓包导出（通常是旧版本）";
+  if (/超时|timeout/i.test(text)) return "抓包超时，请检查网络后重试";
+  return text || "未知错误";
+}
