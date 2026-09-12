@@ -31,6 +31,11 @@
         </svg>
         <span>{{ m.label }}</span>
       </button>
+      <span class="tool-sep"></span>
+      <button class="mode-btn" type="button" title="放大时间轴（也可用鼠标滚轮）" @click="applyZoom('in')">放大 ＋</button>
+      <button class="mode-btn" type="button" title="缩小时间轴" @click="applyZoom('out')">缩小 －</button>
+      <button class="mode-btn" type="button" title="恢复完整时间范围" @click="applyZoom('reset')">重置</button>
+      <span class="muted zoom-info">{{ zoomText }}</span>
     </div>
     <div ref="el" class="chart"></div>
   </div>
@@ -39,6 +44,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import * as echarts from "echarts";
+import { clampRange, zoomLabel, zoomRange } from "../chartzoom.js";
 
 const props = defineProps({
   points: { type: Array, default: () => [] },
@@ -50,6 +56,24 @@ defineEmits(["update-mode"]);
 const el = ref(null);
 const updatedText = ref("");
 let chart = null;
+
+// 缩放区间（百分比，与 ECharts dataZoom 一致）：默认展示完整时间范围
+const zoom = ref({ start: 0, end: 100 });
+const zoomText = computed(() => zoomLabel(zoom.value));
+
+function applyZoom(direction) {
+  zoom.value = zoomRange(zoom.value, direction);
+}
+
+// 用户用滚轮或拖动缩放条后，把 ECharts 的区间同步回组件状态（相同则忽略，避免循环）
+function onDataZoom() {
+  if (!chart) return;
+  const opt = chart.getOption();
+  const dz = (opt.dataZoom && opt.dataZoom[0]) || {};
+  const next = clampRange(dz.start, dz.end);
+  if (Math.abs(next.start - zoom.value.start) < 0.01 && Math.abs(next.end - zoom.value.end) < 0.01) return;
+  zoom.value = next;
+}
 
 const modes = [
   { value: "line", label: "折线图" },
@@ -87,7 +111,7 @@ const palette = computed(() =>
       },
 );
 
-function buildOption(points, mode, p) {
+function buildOption(points, mode, p, z) {
   const times = points.map((pt) => new Date(pt.t * 1000));
   const bps = points.map((pt) => Number(pt.bps || 0));
   const pps = points.map((pt) => Number(pt.pps || 0));
@@ -155,7 +179,7 @@ function buildOption(points, mode, p) {
       valueFormatter: (v) => Number(v || 0).toLocaleString(),
     },
     legend: { data: ["带宽", "包速率"], textStyle: { color: p.legend }, top: 0 },
-    grid: { left: 60, right: 60, top: 34, bottom: 28 },
+    grid: { left: 60, right: 60, top: 34, bottom: 48 },
     xAxis: {
       type: "time",
       axisLine: { lineStyle: { color: p.axis } },
@@ -185,13 +209,27 @@ function buildOption(points, mode, p) {
         splitLine: { show: false },
       },
     ],
+    dataZoom: [
+      { type: "inside", start: z.start, end: z.end, zoomOnMouseWheel: true, moveOnMouseMove: true },
+      {
+        type: "slider",
+        start: z.start,
+        end: z.end,
+        height: 16,
+        bottom: 6,
+        borderColor: p.split,
+        fillerColor: "rgba(34,211,238,0.14)",
+        handleStyle: { color: p.bps },
+        textStyle: { color: p.label, fontSize: 10 },
+      },
+    ],
     series,
   };
 }
 
 function render() {
   if (!chart) return;
-  chart.setOption(buildOption(props.points || [], props.mode, palette.value), true);
+  chart.setOption(buildOption(props.points || [], props.mode, palette.value, zoom.value), true);
   const last = (props.points || []).at(-1);
   updatedText.value = last ? "更新于 " + new Date(last.t * 1000).toLocaleTimeString() : "";
 }
@@ -202,6 +240,7 @@ function onResize() {
 
 onMounted(() => {
   chart = echarts.init(el.value);
+  chart.on("datazoom", onDataZoom);
   render();
   window.addEventListener("resize", onResize);
 });
@@ -212,7 +251,7 @@ onBeforeUnmount(() => {
     chart = null;
   }
 });
-watch(() => [props.points, props.theme, props.mode], render);
+watch(() => [props.points, props.theme, props.mode, zoom.value], render);
 </script>
 
 <style scoped>
@@ -234,5 +273,7 @@ watch(() => [props.points, props.theme, props.mode], render);
 .mode-btn:hover { border-color: var(--accent); color: var(--accent); }
 .mode-btn.active { background: var(--accent); border-color: var(--accent); color: #06222b; font-weight: 600; }
 .mode-ico { width: 16px; height: 16px; }
-.chart { height: 270px; width: 100%; }
+.tool-sep { width: 1px; height: 18px; background: var(--line); margin: 0 2px; }
+.chart { height: 300px; width: 100%; }
+.zoom-info { font-size: 11px; align-self: center; }
 </style>

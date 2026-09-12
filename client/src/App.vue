@@ -82,9 +82,9 @@
       </div>
       <div v-if="banner.show" class="banner" :class="'banner-' + banner.kind">{{ banner.text }}</div>
 
-      <div class="muted section-title">已保存的连接（切换自动刷新）</div>
-      <div v-if="!profiles.length" class="muted empty">还没有保存的连接</div>
-      <div v-for="(p, i) in profiles" :key="i" class="profile">
+      <div class="muted section-title">已保存的连接（连接成功后自动记入，切换自动刷新）</div>
+      <div v-if="!profiles.length" class="muted empty">还没有记录：连接一次后会出现在这里</div>
+      <div v-for="p in profiles" :key="p.base" class="profile">
         <button
           class="profile-main"
           type="button"
@@ -92,11 +92,11 @@
           @click="switchProfile(p)"
         >
           <span class="dot" :class="{ on: connected && p.base === form.base }"></span>
-          <span class="profile-name">{{ p.name }}</span>
-          <span class="muted profile-addr">{{ p.base }}</span>
+          <span class="profile-name">{{ profileName(p) }}</span>
+          <span class="muted profile-addr">{{ p.base }} · {{ lastUsedText(p.lastUsed) }}</span>
         </button>
         <button class="btn small" type="button" @click="useProfile(p)">编辑</button>
-        <button class="profile-del" type="button" title="删除" @click="deleteProfile(p.name)">×</button>
+        <button class="profile-del" type="button" title="删除" @click="deleteProfile(p.base)">×</button>
       </div>
     </aside>
 
@@ -239,10 +239,18 @@ import {
   nextActiveId,
   normalizeTabs,
 } from "./tabs.js";
+import {
+  PROFILE_STORE_KEY,
+  lastUsedText,
+  normalizeProfiles,
+  profileName,
+  removeProfile,
+  upsertProfile,
+} from "./profiles.js";
 import { loadSettings, saveSettings } from "./settings.js";
 import { connectMessage, statusView } from "./status.js";
 
-const STORE_KEY = "netmon.profiles.v1";
+const STORE_KEY = PROFILE_STORE_KEY;
 const CHART_KEY = "netmon.chartMode";
 const pageSize = 20;
 const appWindow = getCurrentWindow();
@@ -303,11 +311,22 @@ function loadChartMode() {
     return "line";
   }
 }
+// 切换历史曲线样式（折线 / 面积 / 柱状），选择结果本地记忆
+function setChartMode(mode) {
+  const m = ["line", "area", "bar"].includes(mode) ? mode : "line";
+  if (m === chartMode.value) return;
+  chartMode.value = m;
+  try {
+    localStorage.setItem(CHART_KEY, m);
+  } catch {
+    // 忽略存储失败
+  }
+  pushLog("图表切换：" + { line: "折线图", area: "面积图", bar: "柱状图" }[m]);
+}
 function loadProfiles() {
   try {
     const raw = localStorage.getItem(STORE_KEY);
-    const arr = raw ? JSON.parse(raw) : [];
-    return Array.isArray(arr) ? arr : [];
+    return normalizeProfiles(raw ? JSON.parse(raw) : []);
   } catch {
     return [];
   }
@@ -523,28 +542,34 @@ function closeTabUI(id) {
 }
 
 function saveProfile() {
-  if (!form.name.trim()) {
-    setBanner("err", "请先填写连接名称");
-    return;
-  }
   const norm = normalizeBaseUrl(form.base);
   if (!norm.ok) {
     setBanner("err", norm.error);
     return;
   }
-  const idx = profiles.value.findIndex((p) => p.name === form.name.trim());
-  const item = { name: form.name.trim(), base: norm.url, token: form.token || "" };
-  if (idx >= 0) profiles.value[idx] = item;
-  else profiles.value.push(item);
+  const item = {
+    name: form.name.trim() || norm.url,
+    base: norm.url,
+    token: form.token || "",
+    lastUsed: Date.now(),
+  };
+  profiles.value = upsertProfile(profiles.value, item);
   persistProfiles();
-  setBanner("ok", `已保存连接：${item.name}`);
-  pushLog(`已保存连接：${item.name}`);
+  setBanner("ok", `已保存连接：${profileName(item)}`);
+  pushLog(`已保存连接：${profileName(item)}`);
+}
+// 连接成功后自动记入账号管理：同一个 IP 只保留一条，并刷新「最近连接」时间
+function rememberConnection(base) {
+  const item = { name: form.name.trim(), base, token: form.token || "", lastUsed: Date.now() };
+  profiles.value = upsertProfile(profiles.value, item);
+  persistProfiles();
+  pushLog("已记入账号管理：" + profileName(item));
 }
 function useProfile(p) {
-  form.name = p.name;
+  form.name = p.name || p.base || "";
   form.base = p.base;
   form.token = p.token || "";
-  setBanner("ok", `已载入连接：${p.name}（编辑中）`);
+  setBanner("ok", `已载入连接：${profileName(p)}（编辑中）`);
 }
 async function switchProfile(p) {
   useProfile(p);
@@ -552,10 +577,10 @@ async function switchProfile(p) {
   pushLog(`切换连接：${p.name} → ${p.base}`);
   await connect();
 }
-function deleteProfile(name) {
-  profiles.value = profiles.value.filter((p) => p.name !== name);
+function deleteProfile(base) {
+  profiles.value = removeProfile(profiles.value, base);
   persistProfiles();
-  pushLog(`已删除连接：${name}`);
+  pushLog(`已删除连接：${base}`);
 }
 
 function withTimeout(promise, ms, label) {
@@ -592,6 +617,7 @@ async function connect() {
     pushLog("实时数据请求成功");
     connected.value = true;
     failCount = 0;
+    rememberConnection(norm.url);
     setBanner("ok", "已连接：" + label);
     const t = activeTab();
     if (t) {

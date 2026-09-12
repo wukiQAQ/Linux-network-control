@@ -1,13 +1,13 @@
 {
   "name": "metd-client",
   "private": true,
-  "version": "0.5.4",
+  "version": "0.6.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test test/format.test.mjs test/status.test.mjs test/settings.test.mjs test/tabs.test.mjs",
+    "test": "node --test test/format.test.mjs test/status.test.mjs test/settings.test.mjs test/tabs.test.mjs test/profiles.test.mjs test/chartzoom.test.mjs test/template-handlers.test.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
