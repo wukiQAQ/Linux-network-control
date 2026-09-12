@@ -12,7 +12,7 @@
 
 ## 项目状态
 
-- **当前阶段**：V0.6.1（面积图/柱状图修复 + 图表缩放 + 账号管理自动记录 + 应用图标更新）
+- **当前阶段**：V0.7.0（连接可取消 + 曲线与 KPI 实时同步 + 抓包导出对接 Wireshark）
 - **技术方向**：Go 语言采集端（AF_PACKET / libpcap）+ Rust/Tauri + Vue 3 桌面客户端（MeTD）
 - **架构分层**：采集 → 解析 → 聚合 → 存储 → API → 展示（网页 / 桌面客户端）→ 告警
 - **存储**：SQLite（默认，纯 Go 驱动 modernc.org/sqlite），可切换 JSONL（file）
@@ -48,6 +48,7 @@ internal/aggregator/     # 秒级聚合：bps / pps / 连接数 / 丢包计数
 internal/storage/        # Backend 接口 + SQLite 实现（默认）+ JSONL(file)
 internal/api/            # REST API /api/v1：now/history/sessions/health（可选 Bearer 鉴权）
 internal/webui/          # 内嵌网页仪表盘（go:embed）
+internal/capture/dumper.go  # 按需抓包：把原始报文流式写为 pcap（供 Wireshark 分析）
 internal/app/            # 管道调度：HandlePacket + TickOnce + 主循环
 internal/config/         # TOML 配置加载（含 api.token）
 client/                  # Windows 桌面客户端 MeTD（Tauri 2 + Vue 3 + ECharts）
@@ -79,6 +80,7 @@ demo/index.html          # 纯前端界面演示（模拟数据，评估交互�
 - 请求统一经 Rust 命令层（reqwest）访问远程 API，令牌保存在进程状态，规避 CORS
 - **V0.4 UI 升级**：程序更名 **MeTD**（蓝色小猫图标）；历史曲线支持折线/面积/柱状三种图表手动切换；设置区提供夜间/明亮主题切换，界面与图表配色随主题变化并本地记忆
 - **V0.4.1**：齿轮设置中心（主题/透明度/自定义背景/自启/托盘）、系统托盘常驻、账号一键切换并自动刷新、左侧图标导航（悬停放大+文字提示）
+- **V0.7.0**：连接过程可随时「取消连接」；历史曲线改为 2 秒重建 + 每秒补实时点，与上方 KPI 数值同步；新增「抓包导出（15 秒 pcap）」一键把 Linux 端流量导出并用 Wireshark 打开
 - **V0.6.0**：修复面积图/柱状图切换（此前 `setChartMode` 未定义，点击无反应）、历史曲线新增放大/缩小/重置与鼠标滚轮缩放、连接成功后自动把该 IP 记入账号管理（按地址去重并显示"最近连接"时间）
 
 ## 路线图
@@ -94,6 +96,7 @@ demo/index.html          # 纯前端界面演示（模拟数据，评估交互�
 | V0.5.1 ✅ | 告警引擎（阈值+持续时长状态机、Webhook、/api/v1/alerts、客户端告警横幅）（已实现） |
 | V0.6.0 ✅ | MeTD 图表样式修复与缩放、账号管理自动记录、使用指南重写（已实现） |
 | V0.6.1 ✅ | MeTD 应用图标更新（新设计图，视觉大小与上一版一致）（已实现） |
+| V0.7.0 ✅ | 连接可取消、曲线与 KPI 实时同步、抓包导出并对接 Wireshark（已实现） |
 | V2 | 告警引擎、TOP N、协议分布、IPv6、多队列抓包、WebSocket、鉴权细化、界面插件框架 |
 | V3 | 客户端增强：WebSocket 实时推送、多机对比、Windows 通知、帮助中心型 AI |
 | V4 | 流量控制：Linux 端 tc 限速（仅本机流量，默认关闭 + 二次确认）+ 控制 API/界面 |
