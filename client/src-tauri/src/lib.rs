@@ -61,7 +61,12 @@ fn clear_connection(state: State<'_, ApiState>) -> Result<(), String> {
 }
 
 // 统一的远程请求实现：api_get / api_post 共用（POST 不带请求体）。
-async fn request_json(state: &ApiState, path: String, post: bool) -> Result<Value, String> {
+async fn request_json(
+    state: &ApiState,
+    path: String,
+    post: bool,
+    body: Option<Value>,
+) -> Result<Value, String> {
     let started = Instant::now();
     let method = if post { "POST" } else { "GET" };
     log_line(&format!("{method} start path={path}"));
@@ -90,7 +95,11 @@ async fn request_json(state: &ApiState, path: String, post: bool) -> Result<Valu
         }
     );
     let mut req = if post {
-        state.client.post(&full)
+        let r = state.client.post(&full);
+        match &body {
+            Some(v) => r.json(v),
+            None => r,
+        }
     } else {
         state.client.get(&full)
     };
@@ -126,13 +135,19 @@ async fn request_json(state: &ApiState, path: String, post: bool) -> Result<Valu
 
 #[tauri::command]
 async fn api_get(state: State<'_, ApiState>, path: String) -> Result<Value, String> {
-    request_json(&state, path, false).await
+    request_json(&state, path, false, None).await
 }
 
 // POST 命令（无请求体）：用于开始抓包等动作类接口。
 #[tauri::command]
 async fn api_post(state: State<'_, ApiState>, path: String) -> Result<Value, String> {
-    request_json(&state, path, true).await
+    request_json(&state, path, true, None).await
+}
+
+// 带 JSON 请求体的 POST：用于执行运维动作等需要传参的接口。
+#[tauri::command]
+async fn api_post_json(state: State<'_, ApiState>, path: String, body: Value) -> Result<Value, String> {
+    request_json(&state, path, true, Some(body)).await
 }
 
 // 把服务端的抓包文件下载到本机临时目录（%TEMP%\MeTD-captures），返回保存路径。
@@ -323,6 +338,7 @@ pub fn run() {
             clear_connection,
             api_get,
             api_post,
+            api_post_json,
             save_capture,
             open_in_wireshark
         ])

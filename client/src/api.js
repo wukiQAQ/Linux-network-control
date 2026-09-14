@@ -22,6 +22,11 @@ export function apiPost(path) {
   return invoke("api_post", { path: path });
 }
 
+// 带 JSON 请求体的 POST（例如执行运维动作）
+export function apiPostJson(path, body) {
+  return invoke("api_post_json", { path: path, body: body });
+}
+
 // 把服务端的抓包文件下载到本机临时目录，返回保存路径
 export function saveCapture(path) {
   return invoke("save_capture", { path: path });

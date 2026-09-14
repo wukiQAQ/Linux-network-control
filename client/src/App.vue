@@ -100,6 +100,30 @@
       </div>
     </aside>
 
+    <aside v-else-if="isActionNav" class="side card">
+      <div class="panel-title">{{ actionCategory.label }} · 常用操作</div>
+      <div class="muted hint">{{ actionCategory.hint }}</div>
+      <div v-if="!actionsSupported" class="banner banner-err">
+        服务端未启用运维动作（需 V0.8.0+），请更新 Linux 端 netmon
+      </div>
+      <template v-else>
+        <div v-if="!categoryActions.length" class="muted empty">该分类暂无可用动作</div>
+        <button v-for="a in categoryActions" :key="a.id" class="action-item" type="button" @click="openAction(a)">
+          <span class="action-row">
+            <span class="action-title">{{ a.title }}</span>
+            <span v-if="a.danger" class="danger-tag">需确认</span>
+          </span>
+          <span class="muted small">{{ a.description }}</span>
+        </button>
+        <div class="muted section-title">最近执行</div>
+        <div v-if="!actionHistory.length" class="muted empty">暂无执行记录</div>
+        <div v-for="h in actionHistory.slice(0, 6)" :key="h.id" class="history-line">
+          <span class="muted small">{{ fmtTs(h.started_at) }}</span>
+          <span class="history-text">{{ historyText(h) }}</span>
+        </div>
+      </template>
+    </aside>
+
     <aside v-else-if="nav === 'logs'" class="side card">
       <div class="panel-title">连接日志与状态</div>
       <div class="status-line">
@@ -185,6 +209,50 @@
       </div>
     </main>
 
+    <!-- 运维动作弹窗：执行前先展示将在 Linux 上执行的命令 -->
+    <div v-if="actionDialog.open" class="overlay" @click.self="closeActionDialog">
+      <div class="dialog card action-dialog">
+        <div class="dialog-head">
+          <span>
+            {{ actionDialog.action.title }}
+            <span v-if="actionDialog.action.danger" class="danger-tag">危险操作</span>
+          </span>
+          <button class="profile-del" type="button" @click="closeActionDialog">×</button>
+        </div>
+        <p class="muted small">{{ actionDialog.action.description }}</p>
+
+        <div v-for="p in actionDialog.action.params || []" :key="p.name" class="field">
+          <label>{{ p.label }}<span v-if="p.required"> *</span></label>
+          <input v-model="actionDialog.params[p.name]" :placeholder="p.placeholder" @keyup.enter="runAction" />
+          <span v-if="p.hint" class="muted small">{{ p.hint }}</span>
+        </div>
+
+        <div class="muted section-title">将在 Linux 上执行的命令</div>
+        <pre class="cmd-box">{{ actionPreview }}</pre>
+        <div class="row">
+          <button class="btn small" type="button" @click="copyActionCommands">复制命令</button>
+          <span v-if="actionDialog.action.danger" class="muted small warn">
+            该操作会修改系统状态，请确认命令无误后再执行
+          </span>
+        </div>
+
+        <div v-if="actionDialog.error" class="banner banner-err">{{ actionDialog.error }}</div>
+        <div v-if="actionDialog.running" class="banner banner-busy">正在 Linux 上执行…</div>
+
+        <template v-if="actionDialog.result">
+          <div class="muted section-title">执行结果 · {{ actionResultSummary(actionDialog.result) }}</div>
+          <pre class="out-box">{{ actionDialog.output }}</pre>
+        </template>
+
+        <div class="row">
+          <button class="btn primary grow" type="button" :disabled="actionDialog.running" @click="runAction">
+            {{ actionDialog.running ? "执行中…" : actionDialog.action.danger ? "确认执行" : "执行" }}
+          </button>
+          <button class="btn" type="button" @click="closeActionDialog">关闭</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 设置弹窗 -->
     <div v-if="settingsOpen" class="overlay" @click.self="settingsOpen = false">
       <div class="dialog card">
@@ -240,6 +308,7 @@ import SessionTable from "./components/SessionTable.vue";
 import {
   apiGet,
   apiPost,
+  apiPostJson,
   autostartDisable,
   autostartEnable,
   autostartIsEnabled,
@@ -270,7 +339,17 @@ import {
 import { loadSettings, saveSettings } from "./settings.js";
 import { connectMessage, statusView } from "./status.js";
 import { chartModeLabel, normalizeChartMode } from "./chartmode.js";
-import { captureSupport } from "./capability.js";
+import { captureSupport, hasFeature } from "./capability.js";
+import {
+  ACTION_NAV_KEYS,
+  actionResultSummary,
+  categoryOfNav,
+  formatActionResult,
+  groupActions,
+  historyText,
+  previewCommands,
+  validateActionParams,
+} from "./actions.js";
 import { LIVE_MAX_POINTS, mergeLiveSample } from "./livechart.js";
 import {
   CAPTURE_SECONDS_DEFAULT,
@@ -298,7 +377,12 @@ const nav = ref("accounts");
 const navItems = [
   { key: "dash", icon: "📊", label: "仪表盘" },
   { key: "accounts", icon: "👤", label: "账号管理" },
-  { key: "logs", icon: "📋", label: "日志" },
+  { key: "system", icon: "🖥️", label: "系统" },
+  { key: "network", icon: "🌐", label: "网络" },
+  { key: "service", icon: "🧩", label: "服务" },
+  { key: "syslog", icon: "📜", label: "系统日志" },
+  { key: "files", icon: "📁", label: "文件" },
+  { key: "logs", icon: "📋", label: "连接日志" },
 ];
 
 const settings = reactive(loadSettings(localStorage));
@@ -324,6 +408,27 @@ const sessPage = ref(1);
 const sessLoading = ref(false);
 const sessFilter = reactive({ ip: "", proto: "" });
 const firingAlerts = ref([]);
+// ---------- 运维动作（白名单动作） ----------
+const actions = ref([]);
+const actionHistory = ref([]);
+const actionDialog = reactive({
+  open: false,
+  action: {},
+  params: {},
+  running: false,
+  result: null,
+  error: "",
+  output: "",
+});
+const actionsSupported = computed(() => hasFeature(now, "actions.run"));
+const isActionNav = computed(() => ACTION_NAV_KEYS.includes(nav.value));
+const actionCategory = computed(() => {
+  const key = categoryOfNav(nav.value);
+  const groups = groupActions(actions.value);
+  return groups.find((g) => g.key === key) || { key: "", label: "运维", hint: "", items: [] };
+});
+const categoryActions = computed(() => actionCategory.value.items || []);
+const actionPreview = computed(() => previewCommands(actionDialog.action, actionDialog.params).join("\n"));
 // 连接取消令牌：取消后本次连接流程的所有后续结果都会被忽略
 const attempt = newAttemptToken();
 // 抓包导出（Wireshark）状态
@@ -682,7 +787,7 @@ async function connect() {
     }
     notify(connectMessage("ok", label));
     startTimers();
-    await Promise.all([refreshNow(), refreshHistory(), loadSessions(1), refreshAlerts()]);
+    await Promise.all([refreshNow(), refreshHistory(), loadSessions(1), refreshAlerts(), loadActions(), loadActionHistory()]);
   } catch (e) {
     if (!isCurrentAttempt(attempt, seq)) return; // 已取消，失败结果直接丢弃
     connected.value = false;
@@ -785,6 +890,91 @@ async function openCaptureInWireshark() {
     const reason = errText(e);
     setBanner("err", "打开失败：" + reason + "（文件已保存到 " + capturePath.value + "）");
     pushLog("打开 Wireshark 失败：" + reason);
+  }
+}
+
+// ---------------- 运维动作（白名单动作 + 命令预览 + 审计） ----------------
+async function loadActions() {
+  if (!connected.value) return;
+  try {
+    const data = await apiGet("/api/v1/actions");
+    actions.value = (data && data.items) || [];
+  } catch (e) {
+    actions.value = [];
+    pushLog("加载运维动作失败：" + errText(e));
+  }
+}
+
+async function loadActionHistory() {
+  if (!connected.value) return;
+  try {
+    const data = await apiGet("/api/v1/actions/history");
+    actionHistory.value = (data && data.items) || [];
+  } catch {
+    actionHistory.value = [];
+  }
+}
+
+// 打开动作弹窗：立刻显示将要执行的命令，避免"点下去不知道做了什么"
+function openAction(a) {
+  actionDialog.open = true;
+  actionDialog.action = a;
+  actionDialog.params = {};
+  (a.params || []).forEach((p) => {
+    actionDialog.params[p.name] = "";
+  });
+  actionDialog.result = null;
+  actionDialog.output = "";
+  actionDialog.error = "";
+}
+
+function closeActionDialog() {
+  actionDialog.open = false;
+}
+
+async function runAction() {
+  const a = actionDialog.action;
+  if (!a || !a.id) return;
+  const checked = validateActionParams(a, actionDialog.params);
+  if (!checked.ok) {
+    actionDialog.error = checked.error;
+    return;
+  }
+  actionDialog.running = true;
+  actionDialog.error = "";
+  actionDialog.result = null;
+  setBanner("busy", "正在 Linux 上执行：" + a.title);
+  try {
+    const res = await withTimeout(
+      apiPostJson("/api/v1/actions/run", { id: a.id, params: checked.params, confirm: !!a.danger }),
+      40000,
+      "执行动作",
+    );
+    actionDialog.result = res;
+    actionDialog.output = formatActionResult(res);
+    setBanner(res.exit_code === 0 ? "ok" : "err", a.title + "：" + actionResultSummary(res));
+    pushLog("执行动作：" + a.title + "（" + actionResultSummary(res) + "）");
+    loadActionHistory();
+  } catch (e) {
+    const reason = errText(e);
+    actionDialog.error = reason;
+    setBanner("err", "执行失败：" + reason);
+    pushLog("执行动作失败：" + a.title + "：" + reason);
+  } finally {
+    actionDialog.running = false;
+  }
+}
+
+function copyActionCommands() {
+  const text = actionPreview.value;
+  if (!text) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(
+      () => pushLog("已复制命令到剪贴板"),
+      () => pushLog("复制失败，请手动选择命令文本"),
+    );
+  } else {
+    pushLog("当前环境不支持自动复制，请手动选择命令文本");
   }
 }
 
@@ -1147,4 +1337,46 @@ onBeforeUnmount(() => {
 .toast-err { background: #7f1d1d; color: #fee2e2; border: 1px solid #ef4444; }
 .toast-enter-active, .toast-leave-active { transition: opacity 0.25s, transform 0.25s; }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translateX(-50%) translateY(-6px); }
+.action-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  text-align: left;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 7px;
+  padding: 7px 9px;
+  margin-bottom: 6px;
+  cursor: pointer;
+}
+.action-item:hover { border-color: var(--accent); }
+.action-row { display: flex; align-items: center; gap: 6px; }
+.action-title { font-size: 13px; font-weight: 600; }
+.danger-tag {
+  font-size: 11px;
+  color: #fca5a5;
+  border: 1px solid #7f1d1d;
+  background: #2a1416;
+  border-radius: 5px;
+  padding: 0 5px;
+}
+.history-line { display: flex; gap: 8px; font-size: 11px; padding: 2px 0; }
+.history-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.action-dialog { max-width: 720px; }
+.cmd-box, .out-box {
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 8px 10px;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 180px;
+  overflow: auto;
+  margin: 4px 0 8px;
+}
+.out-box { max-height: 260px; }
 </style>
