@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/wukiQAQ/Linux-network-control/internal/action"
 	"github.com/wukiQAQ/Linux-network-control/internal/aggregator"
 	"github.com/wukiQAQ/Linux-network-control/internal/alert"
 	"github.com/wukiQAQ/Linux-network-control/internal/api"
@@ -68,6 +69,8 @@ func main() {
 	srv := api.New(cfg, agg, table, store, webui.FS)
 	srv.SetAlerts(eng)
 	srv.SetDumper(dumper)
+	// 白名单运维动作：命令预览 + 参数校验 + 审计
+	srv.SetActions(action.NewExecutor())
 	handler := srv.Handler()
 	httpSrv := &http.Server{Addr: cfg.Listen, Handler: handler}
 

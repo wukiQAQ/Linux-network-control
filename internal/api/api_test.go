@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"io"
@@ -10,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wukiQAQ/Linux-network-control/internal/action"
 	"github.com/wukiQAQ/Linux-network-control/internal/aggregator"
 	"github.com/wukiQAQ/Linux-network-control/internal/alert"
 	"github.com/wukiQAQ/Linux-network-control/internal/capture"
@@ -391,5 +394,110 @@ func TestCaptureDumpDisabled(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("未启用抓包导出时应返回 503，实际 %d", resp.StatusCode)
+	}
+}
+
+// actionsTestServer 返回注入了"假执行器"的测试服务，便于在任意平台验证动作接口。
+func actionsTestServer(t *testing.T) (*httptest.Server, *action.Executor) {
+	t.Helper()
+	cfg := config.Default()
+	store, err := storage.OpenFileStore(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agg := aggregator.New(100)
+	table := flow.NewTable(time.Minute, 5*time.Minute, nil)
+	srv := New(cfg, agg, table, store, webui.FS)
+	exec := action.NewExecutorWithRunner(func(ctx context.Context, command string) (string, string, int) {
+		return "ok: " + command, "", 0
+	})
+	srv.SetActions(exec)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(func() { _ = store.Close() })
+	t.Cleanup(ts.Close)
+	return ts, exec
+}
+
+func postJSON(t *testing.T, url string, body string) (int, map[string]any) {
+	t.Helper()
+	r, err := http.Post(url, "application/json", bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	defer r.Body.Close()
+	var out map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&out); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+	return r.StatusCode, out
+}
+
+// TestActionsAPI 覆盖动作目录、执行、危险动作确认、参数校验与审计。
+func TestActionsAPI(t *testing.T) {
+	ts, _ := actionsTestServer(t)
+
+	// 1) 动作目录：包含命令（供客户端做命令预览）
+	var list map[string]any
+	getJSON(t, ts.URL+"/api/v1/actions", &list)
+	total, _ := list["total"].(float64)
+	if total < 15 {
+		t.Fatalf("动作数量偏少: %v", total)
+	}
+	items, _ := list["items"].([]any)
+	first, _ := items[0].(map[string]any)
+	if _, ok := first["commands"].([]any); !ok {
+		t.Errorf("动作目录应包含 commands 字段: %v", first)
+	}
+	if _, ok := first["category"].(string); !ok {
+		t.Errorf("动作目录应包含 category 字段: %v", first)
+	}
+
+	// 2) 执行普通动作
+	code, res := postJSON(t, ts.URL+"/api/v1/actions/run", `{"id":"system.disk"}`)
+	if code != http.StatusOK {
+		t.Fatalf("执行动作状态码 = %d, resp=%v", code, res)
+	}
+	if out, _ := res["stdout"].(string); !strings.Contains(out, "df -h") {
+		t.Errorf("stdout 应包含实际命令: %v", res["stdout"])
+	}
+	if cmds, ok := res["commands"].([]any); !ok || len(cmds) != 1 {
+		t.Errorf("结果应回带命令列表: %v", res["commands"])
+	}
+
+	// 3) 危险动作未确认 -> 409
+	code, res = postJSON(t, ts.URL+"/api/v1/actions/run", `{"id":"service.restart","params":{"service":"sshd"}}`)
+	if code != http.StatusConflict {
+		t.Fatalf("未确认的危险动作应返回 409，实际 %d (%v)", code, res)
+	}
+	// 确认后可以执行
+	code, _ = postJSON(t, ts.URL+"/api/v1/actions/run", `{"id":"service.restart","params":{"service":"sshd"},"confirm":true}`)
+	if code != http.StatusOK {
+		t.Fatalf("确认后应执行成功，实际 %d", code)
+	}
+
+	// 4) 参数不合法 -> 400；未知动作 -> 404
+	code, _ = postJSON(t, ts.URL+"/api/v1/actions/run", `{"id":"service.status","params":{"service":"ssh; rm -rf /"}}`)
+	if code != http.StatusBadRequest {
+		t.Errorf("非法参数应返回 400，实际 %d", code)
+	}
+	code, _ = postJSON(t, ts.URL+"/api/v1/actions/run", `{"id":"system.rm-rf"}`)
+	if code != http.StatusNotFound {
+		t.Errorf("未知动作应返回 404，实际 %d", code)
+	}
+
+	// 5) 审计历史：前面成功执行了 2 次
+	var hist map[string]any
+	getJSON(t, ts.URL+"/api/v1/actions/history", &hist)
+	if n, _ := hist["total"].(float64); n < 2 {
+		t.Errorf("审计历史条数偏少: %v", hist["total"])
+	}
+}
+
+// TestActionsDisabled 未注入执行器时接口应返回 503。
+func TestActionsDisabled(t *testing.T) {
+	ts, _ := newTestServer(t)
+	code, _ := postJSON(t, ts.URL+"/api/v1/actions/run", `{"id":"system.disk"}`)
+	if code != http.StatusServiceUnavailable {
+		t.Errorf("未启用动作接口时应返回 503，实际 %d", code)
 	}
 }

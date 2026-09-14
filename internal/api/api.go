@@ -5,6 +5,7 @@ package api
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"log"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wukiQAQ/Linux-network-control/internal/action"
 	"github.com/wukiQAQ/Linux-network-control/internal/aggregator"
 	"github.com/wukiQAQ/Linux-network-control/internal/alert"
 	"github.com/wukiQAQ/Linux-network-control/internal/buildinfo"
@@ -28,8 +30,9 @@ type Server struct {
 	store   storage.Backend
 	table   *flow.Table
 	cfg     *config.Config
-	alerts  *alert.Engine   // 可选告警引擎，nil 表示未启用
-	dumper  *capture.Dumper // 可选按需抓包器，nil 表示未启用导出接口
+	alerts  *alert.Engine    // 可选告警引擎，nil 表示未启用
+	dumper  *capture.Dumper  // 可选按需抓包器，nil 表示未启用导出接口
+	actions *action.Executor // 可选运维动作执行器，nil 表示未启用
 	started time.Time
 	ui      fs.FS
 }
@@ -48,6 +51,11 @@ func (s *Server) SetDumper(d *capture.Dumper) {
 	s.dumper = d
 }
 
+// SetActions 注入运维动作执行器（nil 表示不启用动作接口）。
+func (s *Server) SetActions(e *action.Executor) {
+	s.actions = e
+}
+
 // Handler 返回路由。注意：静态页面注册在 "/"，精确 API 路径优先匹配。
 // 配置了 api.token 时，/api/ 前缀请求需要 Authorization: Bearer <token>。
 func (s *Server) Handler() http.Handler {
@@ -60,6 +68,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/capture/dump", s.handleCaptureStart)
 	mux.HandleFunc("GET /api/v1/capture/dump", s.handleCaptureStatus)
 	mux.HandleFunc("GET /api/v1/capture/dump/file", s.handleCaptureFile)
+	mux.HandleFunc("GET /api/v1/actions", s.handleActions)
+	mux.HandleFunc("POST /api/v1/actions/run", s.handleActionRun)
+	mux.HandleFunc("GET /api/v1/actions/history", s.handleActionHistory)
 	mux.Handle("/", http.FileServerFS(s.ui))
 	h := http.Handler(logRequests(mux))
 	if s.cfg.APIToken != "" {
@@ -340,6 +351,59 @@ func capturePayload(res capture.DumpResult, active bool) map[string]any {
 		out["ended_at"] = res.Ended.Format(time.RFC3339)
 	}
 	return out
+}
+
+// handleActions 返回白名单动作目录（含每个动作将要执行的命令，供客户端预览）。
+func (s *Server) handleActions(w http.ResponseWriter, _ *http.Request) {
+	if s.actions == nil {
+		httpError(w, http.StatusServiceUnavailable, "运维动作未启用")
+		return
+	}
+	items := action.Catalog()
+	writeJSON(w, http.StatusOK, map[string]any{"total": len(items), "items": items})
+}
+
+// handleActionRun 执行一个白名单动作。
+// 请求体：{"id":"system.disk","params":{},"confirm":false}
+func (s *Server) handleActionRun(w http.ResponseWriter, r *http.Request) {
+	if s.actions == nil {
+		httpError(w, http.StatusServiceUnavailable, "运维动作未启用")
+		return
+	}
+	var req struct {
+		ID      string            `json:"id"`
+		Params  map[string]string `json:"params"`
+		Confirm bool              `json:"confirm"`
+	}
+	body := http.MaxBytesReader(w, r.Body, 64*1024)
+	if err := json.NewDecoder(body).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "请求体格式错误: "+err.Error())
+		return
+	}
+	res, err := s.actions.Run(r.Context(), req.ID, req.Params, req.Confirm)
+	if err != nil {
+		code := http.StatusBadRequest
+		switch {
+		case errors.Is(err, action.ErrUnknownAction):
+			code = http.StatusNotFound
+		case errors.Is(err, action.ErrConfirmRequired):
+			code = http.StatusConflict
+		}
+		httpError(w, code, err.Error())
+		return
+	}
+	log.Printf("[api] 执行动作 %s exit=%d 用时=%dms", res.ID, res.ExitCode, res.DurationMS)
+	writeJSON(w, http.StatusOK, res)
+}
+
+// handleActionHistory 返回最近的执行审计记录（新的在前）。
+func (s *Server) handleActionHistory(w http.ResponseWriter, _ *http.Request) {
+	if s.actions == nil {
+		httpError(w, http.StatusServiceUnavailable, "运维动作未启用")
+		return
+	}
+	items := s.actions.History()
+	writeJSON(w, http.StatusOK, map[string]any{"total": len(items), "items": items})
 }
 
 func protoName(p uint8) string {
