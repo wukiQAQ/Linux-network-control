@@ -24,6 +24,8 @@ export function normalizeAxisConfig(raw) {
   return {
     mbps: parseAxisInput(src.mbps, MBPS_LIMIT),
     pps: parseAxisInput(src.pps, PPS_LIMIT),
+    // 锁定：坐标轴取一次值后固定住，不随数据频繁变化（默认开启）
+    lock: src.lock === undefined ? true : Boolean(src.lock),
   };
 }
 
@@ -55,12 +57,31 @@ export function autoAxisMax(dataMax) {
   return niceCeil(m * 1.1);
 }
 
+// 计算最终使用的轴上限：手动值 > 已冻结值（锁定开启时）> 按当前数据自动计算。
+// 返回 auto 便于调用方在锁定模式下"取一次值并冻结"。
+export function axisLimits(config, dataMax, frozen) {
+  const c = normalizeAxisConfig(config);
+  const d = dataMax && typeof dataMax === "object" ? dataMax : {};
+  const auto = {
+    left: autoAxisMax(d.bps),
+    right: autoAxisMax(d.pps),
+  };
+  const manualLeft = c.mbps === null ? null : c.mbps * BPS_PER_MBPS;
+  const manualRight = c.pps === null ? null : c.pps;
+  const f = frozen && typeof frozen === "object" ? frozen : {};
+  const left = manualLeft !== null ? manualLeft : c.lock && f.left ? f.left : auto.left;
+  const right = manualRight !== null ? manualRight : c.lock && f.right ? f.right : auto.right;
+  return { left, right, auto, locked: c.lock, manual: manualLeft !== null || manualRight !== null };
+}
+
 // 坐标轴状态文案。
 export function axisHint(config) {
   const c = normalizeAxisConfig(config);
-  if (c.mbps === null && c.pps === null) return "坐标轴：自动（按量级取整，不会一直跳动）";
+  if (c.mbps === null && c.pps === null) {
+    return c.lock ? "坐标轴：锁定（取一次值后固定，不随数据跳动）" : "坐标轴：自动（按量级取整）";
+  }
   const parts = [];
   if (c.mbps !== null) parts.push("左轴 " + c.mbps + " Mb/s");
   if (c.pps !== null) parts.push("右轴 " + c.pps + " pps");
-  return "坐标轴：手动（" + parts.join("，") + "）";
+  return "坐标轴：手动固定（" + parts.join("，") + "）";
 }

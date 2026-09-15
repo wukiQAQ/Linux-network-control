@@ -33,12 +33,16 @@
       <span class="muted zoom-info">{{ zoomText }}</span>
     </div>
     <div class="chart-toolbar axis-row">
-      <span class="muted axis-label">左轴上限</span>
+      <span class="muted axis-label" title="留空表示使用锁定/自动值">左轴上限</span>
       <input v-model="axisForm.mbps" class="axis-input" inputmode="decimal" placeholder="自动" @change="applyAxis" />
       <span class="muted axis-unit">Mb/s</span>
       <span class="muted axis-label">右轴上限</span>
       <input v-model="axisForm.pps" class="axis-input" inputmode="decimal" placeholder="自动" @change="applyAxis" />
       <span class="muted axis-unit">pps</span>
+      <button class="mode-btn" type="button" :class="{ active: axisConfig.lock }" title="锁定坐标轴：取一次值后固定，曲线不再频繁缩放" @click="toggleAxisLock">
+        {{ axisConfig.lock ? "🔒 已锁定" : "🔓 未锁定" }}
+      </button>
+      <button class="mode-btn" type="button" title="按当前数据重新取一次坐标轴值" @click="recomputeAxis">重算</button>
       <button class="mode-btn" type="button" title="清空手动值，恢复自动坐标轴" @click="resetAxis">自动</button>
       <span class="muted zoom-info">{{ axisText }}</span>
     </div>
@@ -50,7 +54,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import * as echarts from "echarts";
 import { clampRange, zoomLabel, zoomRange } from "../chartzoom.js";
-import { AXIS_STORE_KEY, axisHint, axisMax, autoAxisMax, normalizeAxisConfig, parseAxisInput } from "../axis.js";
+import { AXIS_STORE_KEY, axisHint, axisLimits, normalizeAxisConfig, parseAxisInput } from "../axis.js";
 
 const props = defineProps({
   points: { type: Array, default: () => [] },
@@ -98,11 +102,31 @@ function loadAxisConfig() {
 const axisConfig = ref(loadAxisConfig());
 const axisForm = reactive({ mbps: axisConfig.value.mbps ?? "", pps: axisConfig.value.pps ?? "" });
 const axisText = computed(() => axisHint(axisConfig.value));
+// 锁定模式下用于固定坐标轴的数值（0 表示尚未取值）
+const frozen = ref({ left: 0, right: 0 });
+
+// 按当前数据重新取一次值并固定（"重算"按钮）
+function recomputeAxis() {
+  frozen.value = { left: 0, right: 0 };
+  render();
+}
+
+function toggleAxisLock() {
+  axisConfig.value = normalizeAxisConfig({ ...axisConfig.value, lock: !axisConfig.value.lock });
+  frozen.value = { left: 0, right: 0 };
+  try {
+    localStorage.setItem(AXIS_STORE_KEY, JSON.stringify(axisConfig.value));
+  } catch {
+    // 忽略存储失败
+  }
+  render();
+}
 
 function applyAxis() {
   axisConfig.value = normalizeAxisConfig({
     mbps: parseAxisInput(axisForm.mbps, 1e6),
     pps: parseAxisInput(axisForm.pps, 1e9),
+    lock: axisConfig.value.lock,
   });
   axisForm.mbps = axisConfig.value.mbps ?? "";
   axisForm.pps = axisConfig.value.pps ?? "";
@@ -188,9 +212,9 @@ function buildOption(points, mode, p, z, a) {
     ];
   }
 
-  // 坐标轴上限：手动值优先；自动时按量级取整，数字只在跨档位时变化
-  const leftMax = a && a.left !== undefined ? a.left : autoAxisMax(Math.max(0, ...bps));
-  const rightMax = a && a.right !== undefined ? a.right : autoAxisMax(Math.max(0, ...pps));
+  // 坐标轴上限：由调用方统一解析（手动值 / 锁定值 / 自动值）
+  const leftMax = a && a.left ? a.left : Math.max(1, ...bps);
+  const rightMax = a && a.right ? a.right : Math.max(1, ...pps);
 
   return {
     backgroundColor: "transparent",
@@ -256,7 +280,19 @@ function buildOption(points, mode, p, z, a) {
 
 function render() {
   if (!chart) return;
-  chart.setOption(buildOption(props.points || [], props.mode, palette.value, zoom.value, axisMax(axisConfig.value)), true);
+  const pts = props.points || [];
+  const dataMax = {
+    bps: Math.max(0, ...pts.map((p) => Number(p.bps) || 0)),
+    pps: Math.max(0, ...pts.map((p) => Number(p.pps) || 0)),
+  };
+  const lim = axisLimits(axisConfig.value, dataMax, frozen.value);
+  if (axisConfig.value.lock && !axisConfig.value.mbps && !frozen.value.left) {
+    frozen.value = { left: lim.auto.left, right: frozen.value.right || lim.auto.right };
+  }
+  if (axisConfig.value.lock && !axisConfig.value.pps && !frozen.value.right) {
+    frozen.value = { left: frozen.value.left, right: lim.auto.right };
+  }
+  chart.setOption(buildOption(pts, props.mode, palette.value, zoom.value, { left: lim.left, right: lim.right }), true);
   const last = (props.points || []).at(-1);
   updatedText.value = last ? "更新于 " + new Date(last.t * 1000).toLocaleTimeString() : "";
 }

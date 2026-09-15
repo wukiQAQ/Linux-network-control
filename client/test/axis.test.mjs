@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   BPS_PER_MBPS,
+  axisLimits,
   MBPS_LIMIT,
   axisHint,
   axisMax,
@@ -27,9 +28,10 @@ test("parseAxisInput：正常数值与上限夹取", () => {
 });
 
 test("normalizeAxisConfig 容错", () => {
-  assert.deepEqual(normalizeAxisConfig({ mbps: "10", pps: "200" }), { mbps: 10, pps: 200 });
-  assert.deepEqual(normalizeAxisConfig(null), { mbps: null, pps: null });
-  assert.deepEqual(normalizeAxisConfig({ mbps: "x" }), { mbps: null, pps: null });
+  assert.deepEqual(normalizeAxisConfig({ mbps: "10", pps: "200" }), { mbps: 10, pps: 200, lock: true });
+  assert.deepEqual(normalizeAxisConfig(null), { mbps: null, pps: null, lock: true });
+  assert.deepEqual(normalizeAxisConfig({ mbps: "x" }), { mbps: null, pps: null, lock: true });
+  assert.equal(normalizeAxisConfig({ lock: false }).lock, false);
 });
 
 test("axisMax：手动值换算与自动标记", () => {
@@ -63,9 +65,37 @@ test("autoAxisMax 上浮 10% 后取整", () => {
 });
 
 test("axisHint 文案", () => {
-  assert.ok(axisHint({}).includes("自动"));
+  // 默认锁定：不再随数据跳动
+  assert.ok(axisHint({}).includes("锁定"));
+  assert.ok(axisHint({ lock: false }).includes("自动"));
   const manual = axisHint({ mbps: 50, pps: 800 });
   assert.ok(manual.includes("手动"));
   assert.ok(manual.includes("左轴 50 Mb/s"));
   assert.ok(manual.includes("右轴 800 pps"));
+});
+
+test("axisLimits：锁定后坐标轴不再随数据变化", () => {
+  const cfg = { lock: true };
+  const first = axisLimits(cfg, { bps: 1000000, pps: 500 }, {});
+  assert.equal(first.left, 2000000); // 1 Mb/s 上浮取整到 2 Mb
+  // 数据翻倍，但仍在锁定值以内 -> 轴不变
+  const frozen = { left: first.left, right: first.right };
+  const second = axisLimits(cfg, { bps: 1800000, pps: 900 }, frozen);
+  assert.equal(second.left, first.left);
+  assert.equal(second.right, first.right);
+});
+
+test("axisLimits：关闭锁定则跟随数据", () => {
+  const cfg = { lock: false };
+  const a = axisLimits(cfg, { bps: 1000000, pps: 100 }, { left: 111, right: 222 });
+  assert.equal(a.left, 2000000);
+  assert.notEqual(a.right, 222);
+});
+
+test("axisLimits：手动值优先于锁定值与自动值", () => {
+  const cfg = { mbps: 5, lock: true };
+  const r = axisLimits(cfg, { bps: 1000000, pps: 100 }, { left: 999, right: 888 });
+  assert.equal(r.left, 5 * BPS_PER_MBPS);
+  assert.equal(r.right, 888); // 右轴未填 -> 用锁定值
+  assert.equal(r.manual, true);
 });

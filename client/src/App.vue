@@ -131,6 +131,18 @@
         <span>{{ statusView_.text }}</span>
       </div>
       <div class="status-line">
+        <span class="muted">服务端版本：</span>
+        <span>{{ now.version ? "V" + now.version : "未上报（旧版本）" }}</span>
+      </div>
+      <div class="status-line">
+        <span class="muted">已启用能力：</span>
+        <span>{{ featureText }}</span>
+      </div>
+      <div v-if="missingFeatures.length" class="banner banner-err">
+        服务端缺少：{{ missingFeatures.join("、") }}。<br />
+        用仓库里最新的 <b>netmon-linux</b> 替换服务器旧程序并重启即可启用（客户端会自动识别）。
+      </div>
+      <div class="status-line">
         <span class="muted">内核通道：</span>
         <span :class="ipcOk === true ? 'k-ok' : ipcOk === false ? 'k-bad' : ''">
           {{ kernelText }}
@@ -421,6 +433,18 @@ const actionDialog = reactive({
   output: "",
 });
 const actionsSupported = computed(() => hasFeature(now, "actions.run"));
+// 服务端能力展示：让"某功能没启用"一眼看出是版本问题而不是 bug
+const featureText = computed(() =>
+  Array.isArray(now.features) && now.features.length ? now.features.join(" / ") : "未上报（旧版本）",
+);
+const missingFeatures = computed(() => {
+  if (!connected.value) return [];
+  if (!Array.isArray(now.features)) return ["版本/能力上报（V0.7.0+）"];
+  const names = { "capture.dump": "抓包导出", "actions.run": "运维动作", alerts: "告警事件" };
+  return Object.entries(names)
+    .filter(([key]) => !now.features.includes(key))
+    .map(([, label]) => label);
+});
 const isActionNav = computed(() => ACTION_NAV_KEYS.includes(nav.value));
 const actionCategory = computed(() => {
   const key = categoryOfNav(nav.value);
