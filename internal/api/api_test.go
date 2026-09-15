@@ -8,6 +8,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -499,5 +502,69 @@ func TestActionsDisabled(t *testing.T) {
 	code, _ := postJSON(t, ts.URL+"/api/v1/actions/run", `{"id":"system.disk"}`)
 	if code != http.StatusServiceUnavailable {
 		t.Errorf("未启用动作接口时应返回 503，实际 %d", code)
+	}
+}
+
+// TestFilesAPI 覆盖文件通道：目录列表、白名单校验与文件下载（跨平台，用临时目录当白名单根）。
+func TestFilesAPI(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "app.log"), []byte("hello-netmon"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := fileRoots
+	fileRoots = []string{root}
+	defer func() { fileRoots = old }()
+
+	ts, _ := newTestServer(t)
+	base := "/api/v1/files?path=" + url.QueryEscape(root)
+
+	// 1) 列目录：目录在前，包含刚创建的文件与子目录
+	var list map[string]any
+	getJSON(t, ts.URL+base, &list)
+	items, _ := list["items"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("目录项数量 = %d，期望 2", len(items))
+	}
+	first, _ := items[0].(map[string]any)
+	if first["name"] != "sub" || first["is_dir"] != true {
+		t.Errorf("目录应排在最前: %v", first)
+	}
+
+	// 2) 白名单外路径 -> 400；含 .. -> 400；不存在 -> 404
+	for _, bad := range []string{"/root", "/var/log/../../etc"} {
+		r, err := http.Get(ts.URL + "/api/v1/files?path=" + url.QueryEscape(bad))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		if r.StatusCode != http.StatusBadRequest {
+			t.Errorf("非法路径 %s 应返回 400，实际 %d", bad, r.StatusCode)
+		}
+	}
+	r3, _ := http.Get(ts.URL + "/api/v1/files?path=" + url.QueryEscape(filepath.Join(root, "nope")))
+	r3.Body.Close()
+	if r3.StatusCode != http.StatusNotFound {
+		t.Errorf("不存在目录应返回 404，实际 %d", r3.StatusCode)
+	}
+
+	// 3) 下载文件：内容一致
+	dl, err := http.Get(ts.URL + "/api/v1/files/download?path=" + url.QueryEscape(filepath.Join(root, "app.log")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(dl.Body)
+	dl.Body.Close()
+	if dl.StatusCode != http.StatusOK || string(body) != "hello-netmon" {
+		t.Fatalf("下载失败: status=%d body=%q", dl.StatusCode, string(body))
+	}
+
+	// 4) 目录不能下载
+	d2, _ := http.Get(ts.URL + "/api/v1/files/download?path=" + url.QueryEscape(root))
+	d2.Body.Close()
+	if d2.StatusCode != http.StatusBadRequest {
+		t.Errorf("目录下载应返回 400，实际 %d", d2.StatusCode)
 	}
 }

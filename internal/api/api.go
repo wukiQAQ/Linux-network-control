@@ -71,6 +71,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/actions", s.handleActions)
 	mux.HandleFunc("POST /api/v1/actions/run", s.handleActionRun)
 	mux.HandleFunc("GET /api/v1/actions/history", s.handleActionHistory)
+	mux.HandleFunc("GET /api/v1/files", s.handleFilesList)
+	mux.HandleFunc("GET /api/v1/files/download", s.handleFileDownload)
 	mux.Handle("/", http.FileServerFS(s.ui))
 	h := http.Handler(logRequests(mux))
 	if s.cfg.APIToken != "" {
