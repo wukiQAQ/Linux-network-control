@@ -27,6 +27,16 @@ export function apiPostJson(path, body) {
   return invoke("api_post_json", { path: path, body: body });
 }
 
+// 下载服务端任意文件到本机临时目录（文件通道）
+export function saveServerFile(path, name) {
+  return invoke("save_server_file", { path: path, name: name });
+}
+
+// 用系统默认程序打开本地文件
+export function openLocalFile(path) {
+  return invoke("open_local_file", { path: path });
+}
+
 // 把服务端的抓包文件下载到本机临时目录，返回保存路径
 export function saveCapture(path) {
   return invoke("save_capture", { path: path });

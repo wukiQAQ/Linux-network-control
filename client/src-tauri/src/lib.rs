@@ -145,6 +145,51 @@ async fn api_post(state: State<'_, ApiState>, path: String) -> Result<Value, Str
 }
 
 // 带 JSON 请求体的 POST：用于执行运维动作等需要传参的接口。
+// 把服务端的任意文件下载到本机临时目录（%TEMP%\MeTD-files），返回保存路径。
+#[tauri::command]
+async fn save_server_file(state: State<'_, ApiState>, path: String, name: String) -> Result<String, String> {
+    let conn = {
+        let guard = state
+            .conn
+            .lock()
+            .map_err(|_| "连接状态锁获取失败".to_string())?;
+        guard.clone()
+    };
+    let conn = conn.ok_or_else(|| "尚未配置服务器连接".to_string())?;
+    let url = format!("{}{}", conn.base.trim_end_matches('/'), if path.starts_with('/') { path.as_str() } else { "" });
+    let mut req = state.client.get(&url);
+    if !conn.token.is_empty() {
+        req = req.header(AUTHORIZATION, format!("Bearer {}", conn.token));
+    }
+    let resp = req.send().await.map_err(|e| format!("下载失败: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("下载失败: HTTP {}", resp.status().as_u16()));
+    }
+    let bytes = resp.bytes().await.map_err(|e| format!("读取响应失败: {e}"))?;
+    let dir = std::env::temp_dir().join("MeTD-files");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
+    let safe: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || "._-".contains(c) { c } else { '_' })
+        .collect();
+    let dest = dir.join(if safe.is_empty() { "download.bin".to_string() } else { safe });
+    std::fs::write(&dest, &bytes).map_err(|e| format!("保存文件失败: {e}"))?;
+    log_line(&format!("save_server_file {} bytes -> {}", bytes.len(), dest.display()));
+    Ok(dest.to_string_lossy().to_string())
+}
+
+// 用系统默认程序打开本地文件。
+#[tauri::command]
+fn open_local_file(path: String) -> Result<String, String> {
+    if !std::path::Path::new(&path).exists() {
+        return Err("文件不存在".to_string());
+    }
+    if std::process::Command::new("cmd").args(["/C", "start", "", path.as_str()]).spawn().is_ok() {
+        return Ok(format!("已用默认程序打开：{path}"));
+    }
+    Err(format!("打开失败，请手动打开：{path}"))
+}
+
 #[tauri::command]
 async fn api_post_json(state: State<'_, ApiState>, path: String, body: Value) -> Result<Value, String> {
     request_json(&state, path, true, Some(body)).await
@@ -339,6 +384,8 @@ pub fn run() {
             api_get,
             api_post,
             api_post_json,
+            save_server_file,
+            open_local_file,
             save_capture,
             open_in_wireshark
         ])

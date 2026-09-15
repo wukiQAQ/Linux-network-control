@@ -106,7 +106,24 @@
       <div v-if="!actionsSupported" class="banner banner-err">
         服务端未启用运维动作（需 V0.8.0+），请更新 Linux 端 netmon
       </div>
-      <template v-else>
+      <div v-if="nav === 'files' && actionsSupported" class="file-browser">
+        <div class="muted section-title">文件浏览（白名单目录）</div>
+        <div class="row">
+          <input v-model="filePath" class="file-path" placeholder="/var/log" @keyup.enter="loadFiles" />
+          <button class="btn small" type="button" @click="loadFiles">打开</button>
+          <button class="btn small" type="button" @click="fileUp" :disabled="!parentPathOf(filePath)">上级</button>
+        </div>
+        <div v-if="fileError" class="banner banner-err">{{ fileError }}</div>
+        <div v-if="fileLoading" class="muted small">加载中…</div>
+        <div v-for="f in fileEntries" :key="f.path" class="file-row">
+          <button class="file-name" type="button" @click="openEntry(f)">
+            {{ entryIcon(f) }} {{ f.name }}
+          </button>
+          <span class="muted small">{{ f.is_dir ? "-" : fileSizeText(f.size) }}</span>
+          <button v-if="!f.is_dir" class="btn small" type="button" @click="downloadFile(f)">下载</button>
+        </div>
+        <div v-if="!fileEntries.length && !fileLoading && !fileError" class="muted empty">空目录</div>
+      </div>
         <div v-if="!categoryActions.length" class="muted empty">该分类暂无可用动作</div>
         <button v-for="a in categoryActions" :key="a.id" class="action-item" type="button" @click="openAction(a)">
           <span class="action-row">
@@ -121,7 +138,6 @@
           <span class="muted small">{{ fmtTs(h.started_at) }}</span>
           <span class="history-text">{{ historyText(h) }}</span>
         </div>
-      </template>
     </aside>
 
     <aside v-else-if="nav === 'logs'" class="side card">
@@ -321,6 +337,8 @@ import {
   apiGet,
   apiPost,
   apiPostJson,
+  openLocalFile,
+  saveServerFile,
   autostartDisable,
   autostartEnable,
   autostartIsEnabled,
@@ -362,6 +380,7 @@ import {
   previewCommands,
   validateActionParams,
 } from "./actions.js";
+import { entryIcon, fileSizeText, joinPath, parentPath, sortEntries } from "./files.js";
 import { LIVE_MAX_POINTS, mergeLiveSample } from "./livechart.js";
 import {
   CAPTURE_SECONDS_DEFAULT,
@@ -452,6 +471,65 @@ const actionCategory = computed(() => {
   return groups.find((g) => g.key === key) || { key: "", label: "运维", hint: "", items: [] };
 });
 const categoryActions = computed(() => actionCategory.value.items || []);
+// ---------- 文件通道（浏览 + 下载 Linux 文件） ----------
+const filePath = ref("/var/log");
+const fileEntries = ref([]);
+const fileLoading = ref(false);
+const fileError = ref("");
+const parentPathOf = (p) => parentPath(p);
+
+async function loadFiles() {
+  if (!connected.value) return;
+  fileLoading.value = true;
+  fileError.value = "";
+  try {
+    const data = await apiGet("/api/v1/files?path=" + encodeURIComponent(filePath.value));
+    filePath.value = (data && data.path) || filePath.value;
+    fileEntries.value = sortEntries((data && data.items) || []);
+  } catch (e) {
+    fileEntries.value = [];
+    fileError.value = errText(e);
+  } finally {
+    fileLoading.value = false;
+  }
+}
+
+function openEntry(f) {
+  if (!f || !f.is_dir) return;
+  filePath.value = f.path;
+  loadFiles();
+}
+
+function fileUp() {
+  const p = parentPath(filePath.value);
+  if (!p) return;
+  filePath.value = p;
+  loadFiles();
+}
+
+async function downloadFile(f) {
+  if (!f || f.is_dir) return;
+  setBanner("busy", "正在下载 " + f.name + " …");
+  pushLog("下载文件：" + f.path);
+  try {
+    const saved = await withTimeout(
+      saveServerFile("/api/v1/files/download?path=" + encodeURIComponent(f.path), f.name),
+      60000,
+      "下载文件",
+    );
+    setBanner("ok", "已保存到本机：" + saved);
+    pushLog("已下载到本机：" + saved);
+    try {
+      await openLocalFile(saved);
+    } catch {
+      // 打不开就忽略，路径已在界面与日志里
+    }
+  } catch (e) {
+    const reason = errText(e);
+    setBanner("err", "下载失败：" + reason);
+    pushLog("下载失败：" + reason);
+  }
+}
 const actionPreview = computed(() => previewCommands(actionDialog.action, actionDialog.params).join("\n"));
 // 连接取消令牌：取消后本次连接流程的所有后续结果都会被忽略
 const attempt = newAttemptToken();
@@ -811,7 +889,7 @@ async function connect() {
     }
     notify(connectMessage("ok", label));
     startTimers();
-    await Promise.all([refreshNow(), refreshHistory(), loadSessions(1), refreshAlerts(), loadActions(), loadActionHistory()]);
+    await Promise.all([refreshNow(), refreshHistory(), loadSessions(1), refreshAlerts(), loadActions(), loadActionHistory(), loadFiles()]);
   } catch (e) {
     if (!isCurrentAttempt(attempt, seq)) return; // 已取消，失败结果直接丢弃
     connected.value = false;
@@ -1387,6 +1465,10 @@ onBeforeUnmount(() => {
   padding: 0 5px;
 }
 .history-line { display: flex; gap: 8px; font-size: 11px; padding: 2px 0; }
+.file-path { flex: 1; min-width: 90px; background: var(--panel2); border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 4px 7px; font-size: 12px; outline: none; }
+.file-row { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
+.file-name { flex: 1; text-align: left; background: none; border: none; color: var(--text); font-size: 12px; cursor: pointer; padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-name:hover { color: var(--accent); }
 .history-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .action-dialog { max-width: 720px; }
 .cmd-box, .out-box {
