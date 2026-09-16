@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 #[derive(Clone)]
 struct Conn {
@@ -18,6 +18,8 @@ struct Conn {
 struct ApiState {
     client: reqwest::Client,
     conn: Mutex<Option<Conn>>,
+    // 实时推送任务（订阅 /api/v1/stream）
+    stream: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
 }
 
 fn log_line(msg: &str) {
@@ -146,6 +148,75 @@ async fn api_post(state: State<'_, ApiState>, path: String) -> Result<Value, Str
 
 // 带 JSON 请求体的 POST：用于执行运维动作等需要传参的接口。
 // 把服务端的任意文件下载到本机临时目录（%TEMP%\MeTD-files），返回保存路径。
+// 订阅服务端实时通道（SSE），把 snapshot / alert 事件推给前端。
+// 断线会自动重连（3 秒退避），直到调用 stop_stream。
+#[tauri::command]
+fn start_stream(app: tauri::AppHandle, state: State<'_, ApiState>) -> Result<(), String> {
+    stop_stream(state.clone())?;
+    let client = state.client.clone();
+    let conn = {
+        let guard = state.conn.lock().map_err(|_| "连接状态锁获取失败".to_string())?;
+        guard.clone()
+    };
+    let conn = conn.ok_or_else(|| "尚未配置服务器连接".to_string())?;
+    let handle = tauri::async_runtime::spawn(async move {
+        loop {
+            let url = format!("{}/api/v1/stream", conn.base.trim_end_matches('/'));
+            let mut req = client.get(&url);
+            if !conn.token.is_empty() {
+                req = req.header(AUTHORIZATION, format!("Bearer {}", conn.token));
+            }
+            match req.send().await {
+                Ok(mut resp) if resp.status().is_success() => {
+                    log_line("stream connected");
+                    let mut buf = String::new();
+                    while let Ok(Some(chunk)) = resp.chunk().await {
+                        buf.push_str(&String::from_utf8_lossy(&chunk));
+                        while let Some(idx) = buf.find("\n\n") {
+                            let raw = buf[..idx].to_string();
+                            buf.drain(..idx + 2);
+                            let mut event = String::from("message");
+                            let mut data = String::new();
+                            for line in raw.lines() {
+                                if let Some(v) = line.strip_prefix("event: ") {
+                                    event = v.trim().to_string();
+                                } else if let Some(v) = line.strip_prefix("data: ") {
+                                    data = v.trim().to_string();
+                                }
+                            }
+                            if data.is_empty() {
+                                continue;
+                            }
+                            if let Ok(value) = serde_json::from_str::<Value>(&data) {
+                                let _ = app.emit(&event, value);
+                            }
+                        }
+                    }
+                    log_line("stream ended, will reconnect");
+                }
+                Ok(resp) => log_line(&format!("stream http {}", resp.status().as_u16())),
+                Err(e) => log_line(&format!("stream error: {e}")),
+            }
+            // 退避 3 秒后重连（只发生在连接断开时；在异步任务里短暂阻塞是可接受的）
+            std::thread::sleep(std::time::Duration::from_secs(3));
+        }
+    });
+    let mut guard = state.stream.lock().map_err(|_| "连接状态锁获取失败".to_string())?;
+    *guard = Some(handle);
+    Ok(())
+}
+
+// 停止实时推送订阅。
+#[tauri::command]
+fn stop_stream(state: State<'_, ApiState>) -> Result<(), String> {
+    let mut guard = state.stream.lock().map_err(|_| "连接状态锁获取失败".to_string())?;
+    if let Some(h) = guard.take() {
+        h.abort();
+        log_line("stream stopped");
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn save_server_file(state: State<'_, ApiState>, path: String, name: String) -> Result<String, String> {
     let conn = {
@@ -332,6 +403,7 @@ pub fn run() {
         .manage(ApiState {
             client,
             conn: Mutex::new(None),
+            stream: Mutex::new(None),
         })
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "显示 MeTD", true, None::<&str>)?;
@@ -385,6 +457,8 @@ pub fn run() {
             api_post,
             api_post_json,
             save_server_file,
+            start_stream,
+            stop_stream,
             open_local_file,
             save_capture,
             open_in_wireshark

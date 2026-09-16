@@ -27,6 +27,15 @@ export function apiPostJson(path, body) {
   return invoke("api_post_json", { path: path, body: body });
 }
 
+// 订阅 / 停止服务端实时通道（SSE）
+export function startStream() {
+  return invoke("start_stream");
+}
+
+export function stopStream() {
+  return invoke("stop_stream");
+}
+
 // 下载服务端任意文件到本机临时目录（文件通道）
 export function saveServerFile(path, name) {
   return invoke("save_server_file", { path: path, name: name });

@@ -330,6 +330,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import KpiCards from "./components/KpiCards.vue";
 import TrafficChart from "./components/TrafficChart.vue";
 import SessionTable from "./components/SessionTable.vue";
@@ -339,6 +340,8 @@ import {
   apiPostJson,
   openLocalFile,
   saveServerFile,
+  startStream,
+  stopStream,
   autostartDisable,
   autostartEnable,
   autostartIsEnabled,
@@ -439,6 +442,8 @@ const sessPage = ref(1);
 const sessLoading = ref(false);
 const sessFilter = reactive({ ip: "", proto: "" });
 const firingAlerts = ref([]);
+// 实时通道是否已建立
+const streamStarted = ref(false);
 // ---------- 运维动作（白名单动作） ----------
 const actions = ref([]);
 const actionHistory = ref([]);
@@ -890,6 +895,7 @@ async function connect() {
     notify(connectMessage("ok", label));
     startTimers();
     await Promise.all([refreshNow(), refreshHistory(), loadSessions(1), refreshAlerts(), loadActions(), loadActionHistory(), loadFiles()]);
+    setupStream();
   } catch (e) {
     if (!isCurrentAttempt(attempt, seq)) return; // 已取消，失败结果直接丢弃
     connected.value = false;
@@ -897,6 +903,7 @@ async function connect() {
     setBanner("err", "连接失败：" + reason);
     pushLog("失败：" + reason);
     notify(connectMessage("err", label, reason));
+    teardownStream();
     stopTimers();
   } finally {
     if (isCurrentAttempt(attempt, seq)) connecting.value = false;
@@ -915,6 +922,7 @@ function cancelConnect() {
 }
 
 async function disconnect() {
+  teardownStream();
   stopTimers();
   connected.value = false;
   failCount = 0;
@@ -992,6 +1000,42 @@ async function openCaptureInWireshark() {
     const reason = errText(e);
     setBanner("err", "打开失败：" + reason + "（文件已保存到 " + capturePath.value + "）");
     pushLog("打开 Wireshark 失败：" + reason);
+  }
+}
+
+// ---------------- 实时通道（服务端 SSE 推送，替代轮询） ----------------
+let lastStreamAt = 0;
+let unlistenSnapshot = null;
+let unlistenAlert = null;
+
+async function setupStream() {
+  if (streamStarted.value) return;
+  try {
+    await startStream();
+    streamStarted.value = true;
+    pushLog("实时通道已连接（服务端推送，1 秒/条）");
+    if (!unlistenSnapshot) {
+      unlistenSnapshot = await listen("metd-snapshot", (ev) => {
+        lastStreamAt = Date.now();
+        applyNow(ev.payload);
+      });
+    }
+    if (!unlistenAlert) {
+      unlistenAlert = await listen("metd-alert", () => refreshAlerts());
+    }
+  } catch (e) {
+    streamStarted.value = false;
+    pushLog("实时通道不可用，继续使用轮询：" + errText(e));
+  }
+}
+
+async function teardownStream() {
+  if (!streamStarted.value) return;
+  streamStarted.value = false;
+  try {
+    await stopStream();
+  } catch {
+    // 忽略
   }
 }
 
@@ -1119,21 +1163,29 @@ function alertThreshold(a) {
   if (a.series === "traffic.pps") return fmtPps(a.threshold);
   return fmtNum(a.threshold);
 }
+// 把一份实时指标写进界面（轮询与实时推送共用同一条路径）
+function applyNow(data) {
+  if (!data || typeof data !== "object") return;
+  Object.keys(now).forEach((k) => delete now[k]);
+  Object.assign(now, data);
+  failCount = 0;
+  // 让曲线末尾与上方 KPI 数值保持一致
+  const tsMs = Date.parse(now.ts || "");
+  if (Number.isFinite(tsMs)) {
+    history.value = mergeLiveSample(
+      history.value,
+      { t: Math.floor(tsMs / 1000), bps: Number(now.bps) || 0, pps: Number(now.pps) || 0 },
+      { step: HISTORY_STEP, maxPoints: LIVE_MAX_POINTS },
+    );
+  }
+}
+
 async function refreshNow() {
+  // 实时通道正常时不需要轮询（连续 5 秒没收到推送则自动回退到轮询）
+  if (streamStarted.value && Date.now() - lastStreamAt < 5000) return;
   try {
     const data = await apiGet("/api/v1/traffic/now");
-    Object.keys(now).forEach((k) => delete now[k]);
-    Object.assign(now, data);
-    failCount = 0;
-    // 让曲线末尾与上方 KPI 数值保持一致：把这次实时采样并入曲线
-    const tsMs = Date.parse(now.ts || "");
-    if (Number.isFinite(tsMs)) {
-      history.value = mergeLiveSample(
-        history.value,
-        { t: Math.floor(tsMs / 1000), bps: Number(now.bps) || 0, pps: Number(now.pps) || 0 },
-        { step: HISTORY_STEP, maxPoints: LIVE_MAX_POINTS },
-      );
-    }
+    applyNow(data);
   } catch (e) {
     failCount += 1;
     if (failCount >= 4) {
