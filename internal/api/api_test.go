@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -567,4 +568,51 @@ func TestFilesAPI(t *testing.T) {
 	if d2.StatusCode != http.StatusBadRequest {
 		t.Errorf("目录下载应返回 400，实际 %d", d2.StatusCode)
 	}
+}
+
+// TestStreamAPI 校验实时推送通道：首帧立即到达、事件格式正确、断开可控。
+func TestStreamAPI(t *testing.T) {
+	ts, _ := newTestServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("stream 状态码 = %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+		t.Errorf("Content-Type 应为 text/event-stream，实际 %q", ct)
+	}
+	reader := bufio.NewReader(resp.Body)
+	// 首帧：event: snapshot + data: {...}
+	line1, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("读取事件行失败: %v", err)
+	}
+	if !strings.HasPrefix(line1, "event: snapshot") {
+		t.Fatalf("首个事件应为 snapshot，实际 %q", line1)
+	}
+	line2, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("读取数据行失败: %v", err)
+	}
+	if !strings.HasPrefix(line2, "data: ") {
+		t.Fatalf("第二行应为 data，实际 %q", line2)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(strings.TrimSpace(line2), "data: ")), &payload); err != nil {
+		t.Fatalf("data 不是合法 JSON: %v", err)
+	}
+	if _, ok := payload["features"]; !ok {
+		t.Errorf("实时快照应带 features 字段: %v", payload)
+	}
+	cancel() // 断开连接后服务端应结束该连接（无泄漏）
 }

@@ -73,6 +73,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/actions/history", s.handleActionHistory)
 	mux.HandleFunc("GET /api/v1/files", s.handleFilesList)
 	mux.HandleFunc("GET /api/v1/files/download", s.handleFileDownload)
+	mux.HandleFunc("GET /api/v1/stream", s.handleStream)
 	mux.Handle("/", http.FileServerFS(s.ui))
 	h := http.Handler(logRequests(mux))
 	if s.cfg.APIToken != "" {
@@ -86,7 +87,8 @@ func (s *Server) Handler() http.Handler {
 // 使用 subtle.ConstantTimeCompare 避免时序侧信道。
 func requireToken(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/") {
+		// /api/v1/stream 自行校验令牌（浏览器 EventSource 不能设置请求头）
+		if strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api/v1/stream" {
 			const prefix = "Bearer "
 			auth := r.Header.Get("Authorization")
 			if !strings.HasPrefix(auth, prefix) {
