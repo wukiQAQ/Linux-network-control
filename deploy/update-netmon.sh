@@ -141,13 +141,24 @@ kill_by_name() {
   return 0
 }
 
+# 备份目录：目标目录可写就放旁边，否则放家目录（避免 /usr/local/bin 需要 root 权限）
+backup_dir() {
+  if [ -w "$(dirname "$TARGET")" ]; then
+    printf '%s' "$(dirname "$TARGET")"
+  else
+    printf '%s' "${INSTALL_DIR%/}/netmon-backups"
+  fi
+}
+
 latest_backup() {
-  ls -1t "${INSTALL_DIR%/}/${BIN_NAME}.bak."* 2>/dev/null | head -n 1 || true
+  local d
+  d="$(backup_dir)"
+  ls -1t "${d}/${BIN_NAME}.bak."* "${INSTALL_DIR%/}/${BIN_NAME}.bak."* 2>/dev/null | head -n 1 || true
 }
 
 rotate_backups() {
   local list
-  list="$(ls -1t "${INSTALL_DIR%/}/${BIN_NAME}.bak."* 2>/dev/null || true)"
+  list="$(ls -1t "$(backup_dir)/${BIN_NAME}.bak."* "${INSTALL_DIR%/}/${BIN_NAME}.bak."* 2>/dev/null || true)"
   [ -z "$list" ] && return 0
   echo "$list" | tail -n "+$((KEEP_BACKUPS + 1))" | while read -r old; do
     if [ -n "$old" ]; then run "rm -f '${old}'"; fi
@@ -289,7 +300,9 @@ fi
 # 3) 备份旧二进制
 step "备份旧二进制"
 if [ -f "$TARGET" ]; then
-  BACKUP="${TARGET}.bak.$(date +%Y%m%d-%H%M%S)"
+  bdir="$(backup_dir)"
+  run "mkdir -p '${bdir}'"
+  BACKUP="${bdir}/${BIN_NAME}.bak.$(date +%Y%m%d-%H%M%S)"
   run "cp -a '${TARGET}' '${BACKUP}'"
   log "  备份：${BACKUP}"
   rotate_backups || true
