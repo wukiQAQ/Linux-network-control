@@ -1,0 +1,2 @@
+# 部署脚本必须在 Linux 上可直接执行：强制以 LF 检出/存储
+*.sh text eol=lf

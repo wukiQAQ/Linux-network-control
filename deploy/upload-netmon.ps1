@@ -21,9 +21,15 @@ $script = Join-Path $PSScriptRoot "update-netmon.sh"
 if (-not (Test-Path -LiteralPath $Binary)) { throw "找不到本地二进制：$Binary" }
 if (-not (Test-Path -LiteralPath $script)) { throw "找不到脚本：$script" }
 
+# Windows 检出可能把 .sh 变成 CRLF，会导致 Linux 报 "bad interpreter"：
+# 这里先转成 LF 的临时副本再上传。
+$lfScript = Join-Path $env:TEMP "update-netmon-lf.sh"
+$text = [System.IO.File]::ReadAllText($script).Replace("`r`n", "`n").Replace("`r", "`n")
+[System.IO.File]::WriteAllText($lfScript, $text, (New-Object System.Text.UTF8Encoding($false)))
+
 $target = "$User@$Server"
 $cmds = @(
-  "scp `"$Binary`" `"$script`" ${target}:$RemoteDir/",
+  "scp `"$Binary`" `"$lfScript`" ${target}:$RemoteDir/",
   "ssh $target `"chmod +x $RemoteDir/update-netmon.sh; $RemoteDir/update-netmon.sh -b $RemoteDir/netmon-linux -c $Config -s $Service -p $Port`""
 )
 
