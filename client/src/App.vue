@@ -173,8 +173,14 @@
     <aside v-else-if="isActionNav" class="side card">
       <div class="panel-title">{{ actionCategory.label }} · 常用操作</div>
       <div class="muted hint">{{ actionCategory.hint }}</div>
-      <div v-if="!actionsSupported" class="banner banner-err">
-        服务端未启用运维动作（需 V0.8.0+），请更新 Linux 端 netmon
+      <div v-if="!connected" class="banner banner-err">
+        未连接服务器：请先在「账号管理」里连接；若连不上，说明 Linux 端 netmon 没在运行
+        （在服务器上执行：systemctl status netmon / sudo ss -ltnp | grep :8080）
+      </div>
+      <div v-else-if="!actionsSupported" class="banner banner-err">
+        当前服务端{{ now.version ? "（V" + now.version + "）" : "未上报版本" }}不支持运维动作
+        <template v-if="!now.version || compareVersion(now.version, '0.8.0') < 0">：请把 Linux 端 netmon 更新到 V0.8.0 及以上</template>
+        <template v-else>：该版本未包含该能力，请确认部署的是本项目最新 netmon</template>
       </div>
       <div v-if="nav === 'files' && actionsSupported" class="file-browser">
         <div class="muted section-title">文件浏览（白名单目录）</div>
@@ -258,7 +264,9 @@
         </button>
         <span class="muted small" :class="{ warn: !captureSupportInfo.ok }">
           {{
-            !captureSupportInfo.ok
+            !connected
+              ? "未连接服务器（连不上时请检查 Linux 端 netmon 是否运行）"
+              : !captureSupportInfo.ok
               ? captureSupportInfo.hint
               : capturePath
                 ? "最近文件：" + capturePath
@@ -719,6 +727,17 @@ const kernelText = computed(() =>
   ipcOk.value === true ? "正常" : ipcOk.value === false ? "异常" : "检测中",
 );
 
+// 简易版本比较（用于提示"是否需要升级服务端"）
+function compareVersion(a, b) {
+  const pa = String(a || "0").split(".").map((x) => parseInt(x, 10) || 0);
+  const pb = String(b || "0").split(".").map((x) => parseInt(x, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d !== 0) return d > 0 ? 1 : -1;
+  }
+  return 0;
+}
+
 function loadChartMode() {
   try {
     return normalizeChartMode(localStorage.getItem(CHART_KEY));
@@ -1054,6 +1073,13 @@ async function connect() {
     const reason = errText(e);
     setBanner("err", "连接失败：" + reason);
     pushLog("失败：" + reason);
+    if (/refused|拒绝|timed out|超时|error sending request/i.test(reason)) {
+      pushLog("排查建议：① 在服务器执行 systemctl status netmon 看服务是否在跑；" +
+        "② sudo ss -ltnp | grep :8080 看端口是否监听；" +
+        "③ 检查防火墙是否放行 8080");
+    } else if (/401|Unauthorized/i.test(reason)) {
+      pushLog("排查建议：服务端设置了 [api] token，请在「账号管理」里填写相同令牌");
+    }
     notify(connectMessage("err", label, reason));
     teardownStream();
     stopTimers();
