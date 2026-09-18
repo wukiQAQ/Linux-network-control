@@ -30,6 +30,9 @@ go run ./cmd/netmon            # 浏览器打开 http://localhost:8080
 ```
 
 ```text
+# 更新已有部署（Windows 一键：上传 + 停旧进程 + 备份 + 替换 + 校验版本）
+.\deploy\upload-netmon.ps1 -Server 192.168.161.128 -User wuki
+
 # 2) 监控真实 Linux 服务器
 ① 在 Linux 上运行采集端：sudo ./netmon-linux -config config.toml   （默认监听 :8080）
 ② 打开 Windows 客户端 MeTD（client/src-tauri/target/release/metd.exe；自行构建请用 npm run build:app，不要直接 cargo build）
@@ -59,6 +62,7 @@ client/                  # Windows 桌面客户端 MeTD（Tauri 2 + Vue 3 + ECha
   src/profiles.js        #   账号管理纯逻辑：连过的 IP 自动记入、按地址去重、最近连接时间
   src/chartzoom.js       #   历史曲线缩放区间计算（放大 / 缩小 / 重置）
   test/                  #   前端单元测试（node --test，41 个用例）
+deploy/                  # 部署脚本：Linux 一键更新/回滚 + Windows 一键上传
 docs/                    # 产品设计 / 技术方案 / 系统设计 / 源码讲解 / 版本记录
 demo/index.html          # 纯前端界面演示（模拟数据，评估交互用）
 ```
