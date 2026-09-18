@@ -11,28 +11,32 @@ import (
 )
 
 const (
-	ProtoICMP = 1
-	ProtoTCP  = 6
-	ProtoUDP  = 17
+	ProtoICMP   = 1
+	ProtoTCP    = 6
+	ProtoUDP    = 17
+	ProtoICMPv6 = 58
 
-	EthTypeIPv4  = 0x0800
-	EthTypeVLAN  = 0x8100
-	EthTypeQinQ  = 0x88a8
-	ethHdrLen    = 14
-	ipv4HdrMin   = 20
-	tcpHdrMin    = 20
-	udpHdrMin    = 8
+	EthTypeIPv4 = 0x0800
+	EthTypeIPv6 = 0x86dd
+	EthTypeVLAN = 0x8100
+	EthTypeQinQ = 0x88a8
+	ethHdrLen   = 14
+	ipv4HdrMin  = 20
+	ipv6HdrLen  = 40
+	tcpHdrMin   = 20
+	udpHdrMin   = 8
 )
 
 // Info 是解析器输出的"包级摘要"，不含原始字节，供流表与聚合使用。
 type Info struct {
-	Protocol   uint8
-	SrcIP      netip.Addr
-	DstIP      netip.Addr
-	SrcPort    uint16
-	DstPort    uint16
-	TCPFlags   uint8 // TCP 标志位（仅 TCP 有意义）
-	L4Payload  int   // 传输层负载长度
+	Protocol  uint8
+	SrcIP     netip.Addr
+	DstIP     netip.Addr
+	SrcPort   uint16
+	DstPort   uint16
+	TCPFlags  uint8 // TCP 标志位（仅 TCP 有意义）
+	IPv6      bool  // 是否为 IPv6 报文
+	L4Payload int   // 传输层负载长度
 }
 
 var (
@@ -40,7 +44,7 @@ var (
 	ErrUnsupported = errors.New("不支持的报文类型")
 )
 
-// Parse 解码一个完整以太网帧。只做"剥头提取元数据"，不做校验和验证（内核已校验）。
+// Parse 解码一个完整以太网帧（IPv4 / IPv6）。只做"剥头提取元数据"，不做校验和验证。
 func Parse(b []byte) (*Info, error) {
 	if len(b) < ethHdrLen {
 		return nil, ErrShort
@@ -55,16 +59,25 @@ func Parse(b []byte) (*Info, error) {
 		}
 		etype = int(binary.BigEndian.Uint16(b[off:]))
 	}
-	if etype != EthTypeIPv4 {
+	l3 := off + 2 // IP 层起点：EtherType 字段之后
+	switch etype {
+	case EthTypeIPv4:
+		return parseIPv4(b, l3)
+	case EthTypeIPv6:
+		return parseIPv6(b, l3)
+	default:
 		return nil, fmt.Errorf("%w: ethertype=0x%04x", ErrUnsupported, etype)
 	}
-	l3 := off + 2 // IP 层起点：以太网头 14 字节 = ethertype 字段之后
+}
+
+// parseIPv4 解析 IPv4 头并继续解析传输层。
+func parseIPv4(b []byte, l3 int) (*Info, error) {
 	if len(b) < l3+ipv4HdrMin {
 		return nil, ErrShort
 	}
 	verIHL := b[l3]
 	if verIHL>>4 != 4 {
-		return nil, fmt.Errorf("%w: IP 版本=%d（MVP 仅支持 IPv4）", ErrUnsupported, verIHL>>4)
+		return nil, fmt.Errorf("%w: IP 版本=%d", ErrUnsupported, verIHL>>4)
 	}
 	ihl := int(verIHL&0x0f) * 4
 	if ihl < ipv4HdrMin || len(b) < l3+ihl {
@@ -72,11 +85,53 @@ func Parse(b []byte) (*Info, error) {
 	}
 	info := &Info{
 		Protocol:  b[l3+9],
-			SrcIP:     netip.AddrFrom4([4]byte{b[l3+12], b[l3+13], b[l3+14], b[l3+15]}),
-			DstIP:     netip.AddrFrom4([4]byte{b[l3+16], b[l3+17], b[l3+18], b[l3+19]}),
-			L4Payload: len(b) - (l3 + ihl),
+		SrcIP:     netip.AddrFrom4([4]byte{b[l3+12], b[l3+13], b[l3+14], b[l3+15]}),
+		DstIP:     netip.AddrFrom4([4]byte{b[l3+16], b[l3+17], b[l3+18], b[l3+19]}),
+		L4Payload: len(b) - (l3 + ihl),
 	}
-	l4 := l3 + ihl
+	return parseL4(info, b, l3+ihl)
+}
+
+// extHeaders 是需要跳过的常见 IPv6 扩展头：逐跳、路由、分片、目的选项。
+var extHeaders = map[uint8]bool{0: true, 43: true, 44: true, 60: true}
+
+// parseIPv6 解析 IPv6 头（含最多 4 个扩展头）并继续解析传输层。
+func parseIPv6(b []byte, l3 int) (*Info, error) {
+	if len(b) < l3+ipv6HdrLen {
+		return nil, ErrShort
+	}
+	if b[l3]>>4 != 6 {
+		return nil, fmt.Errorf("%w: IP 版本=%d", ErrUnsupported, b[l3]>>4)
+	}
+	next := b[l3+6]
+	var s16, d16 [16]byte
+	copy(s16[:], b[l3+8:l3+24])
+	copy(d16[:], b[l3+24:l3+40])
+	l4 := l3 + ipv6HdrLen
+	for i := 0; i < 4 && extHeaders[next]; i++ {
+		if len(b) < l4+2 {
+			return nil, ErrShort
+		}
+		hdrNext := b[l4]
+		hlen := (int(b[l4+1]) + 1) * 8
+		if len(b) < l4+hlen {
+			return nil, ErrShort
+		}
+		l4 += hlen
+		next = hdrNext
+	}
+	info := &Info{
+		Protocol:  next,
+		SrcIP:     netip.AddrFrom16(s16),
+		DstIP:     netip.AddrFrom16(d16),
+		IPv6:      true,
+		L4Payload: len(b) - l4,
+	}
+	return parseL4(info, b, l4)
+}
+
+// parseL4 解析传输层头部（TCP 端口与标志位、UDP 端口；ICMP/ICMPv6 无端口）。
+func parseL4(info *Info, b []byte, l4 int) (*Info, error) {
 	switch info.Protocol {
 	case ProtoTCP:
 		if len(b) < l4+tcpHdrMin {
@@ -140,7 +195,7 @@ func buildEthIPv4(src, dst netip.Addr, proto uint8, l4 []byte) []byte {
 	ip[0] = 0x45
 	binary.BigEndian.PutUint16(ip[2:], uint16(total))
 	binary.BigEndian.PutUint16(ip[4:], 0x1234) // ID
-	ip[8] = 64                                  // TTL
+	ip[8] = 64                                 // TTL
 	ip[9] = proto
 	copy(ip[12:16], s4[:])
 	copy(ip[16:20], d4[:])
