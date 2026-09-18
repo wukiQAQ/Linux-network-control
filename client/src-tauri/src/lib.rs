@@ -217,6 +217,44 @@ fn stop_stream(state: State<'_, ApiState>) -> Result<(), String> {
     Ok(())
 }
 
+// 多机探测：并发（顺序）访问多台服务器的 /traffic/now，返回在线状态、版本、能力与实时指标。
+#[tauri::command]
+async fn probe_hosts(state: State<'_, ApiState>, hosts: Vec<Value>) -> Result<Value, String> {
+    let mut out = Vec::new();
+    for h in hosts {
+        let name = h.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let base = h.get("base").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let token = h.get("token").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let mut item = serde_json::json!({ "name": name, "base": base, "ok": false });
+        if base.is_empty() {
+            item["error"] = serde_json::json!("地址为空");
+            out.push(item);
+            continue;
+        }
+        let url = format!("{}/api/v1/traffic/now", base.trim_end_matches('/'));
+        let mut req = state.client.get(&url).timeout(std::time::Duration::from_secs(3));
+        if !token.is_empty() {
+            req = req.header(AUTHORIZATION, format!("Bearer {}", token));
+        }
+        match req.send().await {
+            Ok(resp) if resp.status().is_success() => {
+                let body = resp.text().await.unwrap_or_default();
+                match serde_json::from_str::<Value>(&body) {
+                    Ok(v) => {
+                        item["ok"] = serde_json::json!(true);
+                        item["now"] = v;
+                    }
+                    Err(e) => item["error"] = serde_json::json!(format!("解析失败: {e}")),
+                }
+            }
+            Ok(resp) => item["error"] = serde_json::json!(format!("HTTP {}", resp.status().as_u16())),
+            Err(e) => item["error"] = serde_json::json!(format!("{e}")),
+        }
+        out.push(item);
+    }
+    Ok(Value::Array(out))
+}
+
 #[tauri::command]
 async fn save_server_file(state: State<'_, ApiState>, path: String, name: String) -> Result<String, String> {
     let conn = {
@@ -458,6 +496,7 @@ pub fn run() {
             api_post_json,
             save_server_file,
             start_stream,
+            probe_hosts,
             stop_stream,
             open_local_file,
             save_capture,

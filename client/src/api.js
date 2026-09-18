@@ -27,6 +27,11 @@ export function apiPostJson(path, body) {
   return invoke("api_post_json", { path: path, body: body });
 }
 
+// 多机探测：一次请求多台服务器的实时指标与能力
+export function probeHosts(hosts) {
+  return invoke("probe_hosts", { hosts: hosts });
+}
+
 // 订阅 / 停止服务端实时通道（SSE）
 export function startStream() {
   return invoke("start_stream");

@@ -100,6 +100,33 @@
       </div>
     </aside>
 
+    <aside v-else-if="nav === 'hosts'" class="side card">
+      <div class="panel-title">主机（{{ hostSummary.online }}/{{ hostSummary.total }} 在线）</div>
+      <div class="muted hint">已保存的连接会自动探测；点「切换」即可连到该主机</div>
+      <div class="row">
+        <button class="btn small" type="button" :disabled="hostProbing" @click="probeAllHosts">
+          {{ hostProbing ? "探测中…" : "刷新状态" }}
+        </button>
+      </div>
+      <div v-if="!hostRows.length" class="muted empty">还没有保存的连接</div>
+      <div v-for="h in hostRows" :key="h.base" class="host-row">
+        <span class="dot" :class="hostStatus(h.probe).cls"></span>
+        <div class="host-main">
+          <div class="host-name">
+            {{ h.name }}<span class="muted small"> · {{ hostVersion(h.probe) }}</span>
+          </div>
+          <div class="muted small">{{ h.base }}</div>
+          <div class="muted small">
+            {{ h.probe && h.probe.ok ? hostMetrics(h.probe) : h.probe ? h.probe.error : "未探测" }}
+          </div>
+          <div v-if="h.probe && h.probe.ok" class="host-badges">
+            <span v-for="b in featureBadges(h.probe)" :key="b" class="badge-mini">{{ b }}</span>
+          </div>
+        </div>
+        <button class="btn small" type="button" @click="switchProfile(h)">切换</button>
+      </div>
+    </aside>
+
     <aside v-else-if="isActionNav" class="side card">
       <div class="panel-title">{{ actionCategory.label }} · 常用操作</div>
       <div class="muted hint">{{ actionCategory.hint }}</div>
@@ -339,6 +366,7 @@ import {
   apiPost,
   apiPostJson,
   openLocalFile,
+  probeHosts,
   saveServerFile,
   startStream,
   stopStream,
@@ -384,6 +412,7 @@ import {
   validateActionParams,
 } from "./actions.js";
 import { entryIcon, fileSizeText, joinPath, parentPath, sortEntries } from "./files.js";
+import { featureBadges, fleetSummary, hostMetrics, hostStatus, hostVersion, sortHosts } from "./hosts.js";
 import { LIVE_MAX_POINTS, mergeLiveSample } from "./livechart.js";
 import {
   CAPTURE_SECONDS_DEFAULT,
@@ -411,6 +440,7 @@ const nav = ref("accounts");
 const navItems = [
   { key: "dash", icon: "📊", label: "仪表盘" },
   { key: "accounts", icon: "👤", label: "账号管理" },
+  { key: "hosts", icon: "🖥", label: "主机" },
   { key: "system", icon: "🖥️", label: "系统" },
   { key: "network", icon: "🌐", label: "网络" },
   { key: "service", icon: "🧩", label: "服务" },
@@ -444,6 +474,50 @@ const sessFilter = reactive({ ip: "", proto: "" });
 const firingAlerts = ref([]);
 // 实时通道是否已建立
 const streamStarted = ref(false);
+// ---------- 多机（fleet） ----------
+const hostProbes = reactive({});
+const hostProbing = ref(false);
+const hostRows = computed(() =>
+  sortHosts(profiles.value.map((p) => ({ ...p, probe: hostProbes[p.base] || null }))),
+);
+const hostSummary = computed(() => fleetSummary(hostRows.value));
+let hostTimer = null;
+
+async function probeAllHosts() {
+  if (!profiles.value.length) return;
+  hostProbing.value = true;
+  try {
+    const specs = profiles.value.map((p) => ({ name: profileName(p), base: p.base, token: p.token || "" }));
+    const res = await withTimeout(probeHosts(specs), 20000, "主机探测");
+    (res || []).forEach((r) => {
+      if (r && r.base) hostProbes[r.base] = r;
+    });
+  } catch (e) {
+    pushLog("主机探测失败：" + errText(e));
+  } finally {
+    hostProbing.value = false;
+  }
+}
+
+// 连接/删除连接后，如果主机面板正开着就重新探测一次
+watch(
+  () => profiles.value.map((p) => p.base).join(","),
+  () => {
+    if (nav.value === "hosts") probeAllHosts();
+  },
+);
+
+// 打开主机面板时探测一次，之后每 15 秒刷新
+watch(nav, (v) => {
+  if (hostTimer) {
+    clearInterval(hostTimer);
+    hostTimer = null;
+  }
+  if (v === "hosts") {
+    probeAllHosts();
+    hostTimer = setInterval(probeAllHosts, 15000);
+  }
+});
 // ---------- 运维动作（白名单动作） ----------
 const actions = ref([]);
 const actionHistory = ref([]);
@@ -1518,6 +1592,11 @@ onBeforeUnmount(() => {
 }
 .history-line { display: flex; gap: 8px; font-size: 11px; padding: 2px 0; }
 .file-path { flex: 1; min-width: 90px; background: var(--panel2); border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 4px 7px; font-size: 12px; outline: none; }
+.host-row { display: flex; align-items: flex-start; gap: 7px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.host-main { flex: 1; min-width: 0; }
+.host-name { font-size: 13px; font-weight: 600; }
+.host-badges { display: flex; gap: 4px; margin-top: 3px; flex-wrap: wrap; }
+.badge-mini { font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--panel2); border: 1px solid var(--line); color: var(--muted); }
 .file-row { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
 .file-name { flex: 1; text-align: left; background: none; border: none; color: var(--text); font-size: 12px; cursor: pointer; padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-name:hover { color: var(--accent); }
