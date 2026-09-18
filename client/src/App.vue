@@ -100,6 +100,49 @@
       </div>
     </aside>
 
+    <aside v-else-if="nav === 'topn'" class="side card">
+      <div class="panel-title">流量排行</div>
+      <div class="muted hint">{{ panelTitle(topnRes) }}</div>
+      <div class="row">
+        <button
+          v-for="r in TOPN_RANGES"
+          :key="r.value"
+          class="btn small"
+          :class="{ primary: topnSince === r.value }"
+          type="button"
+          @click="setTopnRange(r.value)"
+        >{{ r.label }}</button>
+        <button class="btn small" type="button" :disabled="topnLoading" @click="loadTopN">
+          {{ topnLoading ? "刷新中…" : "刷新" }}
+        </button>
+      </div>
+      <div v-if="topnError" class="banner banner-err">{{ topnError }}</div>
+
+      <div class="muted section-title">TOP IP</div>
+      <div v-if="!topnRes.by_ip || !topnRes.by_ip.length" class="muted empty">暂无数据（会话需空闲后落库）</div>
+      <div v-for="e in topnRes.by_ip || []" :key="'ip-' + e.key" class="topn-row">
+        <span class="topn-key">{{ entryLabel('ip', e.key) }}</span>
+        <span class="topn-bar"><i :style="{ width: barWidth(e.percent) }"></i></span>
+        <span class="muted small">{{ entrySummary(e) }}</span>
+      </div>
+
+      <div class="muted section-title">协议分布</div>
+      <div v-if="!topnRes.by_proto || !topnRes.by_proto.length" class="muted empty">暂无数据</div>
+      <div v-for="e in topnRes.by_proto || []" :key="'proto-' + e.key" class="topn-row">
+        <span class="topn-key">{{ entryLabel('proto', e.key) }}</span>
+        <span class="topn-bar"><i :style="{ width: barWidth(e.percent) }"></i></span>
+        <span class="muted small">{{ entrySummary(e) }}</span>
+      </div>
+
+      <div class="muted section-title">TOP 端口</div>
+      <div v-if="!topnRes.by_port || !topnRes.by_port.length" class="muted empty">暂无数据</div>
+      <div v-for="e in topnRes.by_port || []" :key="'port-' + e.key" class="topn-row">
+        <span class="topn-key">{{ entryLabel('port', e.key) }}</span>
+        <span class="topn-bar"><i :style="{ width: barWidth(e.percent) }"></i></span>
+        <span class="muted small">{{ entrySummary(e) }}</span>
+      </div>
+    </aside>
+
     <aside v-else-if="nav === 'hosts'" class="side card">
       <div class="panel-title">主机（{{ hostSummary.online }}/{{ hostSummary.total }} 在线）</div>
       <div class="muted hint">已保存的连接会自动探测；点「切换」即可连到该主机</div>
@@ -413,6 +456,7 @@ import {
 } from "./actions.js";
 import { entryIcon, fileSizeText, joinPath, parentPath, sortEntries } from "./files.js";
 import { featureBadges, fleetSummary, hostMetrics, hostStatus, hostVersion, sortHosts } from "./hosts.js";
+import { TOPN_RANGES, barWidth, entryLabel, entrySummary, panelTitle } from "./topn.js";
 import { LIVE_MAX_POINTS, mergeLiveSample } from "./livechart.js";
 import {
   CAPTURE_SECONDS_DEFAULT,
@@ -441,6 +485,7 @@ const navItems = [
   { key: "dash", icon: "📊", label: "仪表盘" },
   { key: "accounts", icon: "👤", label: "账号管理" },
   { key: "hosts", icon: "🖥", label: "主机" },
+  { key: "topn", icon: "📈", label: "排行" },
   { key: "system", icon: "🖥️", label: "系统" },
   { key: "network", icon: "🌐", label: "网络" },
   { key: "service", icon: "🧩", label: "服务" },
@@ -474,6 +519,31 @@ const sessFilter = reactive({ ip: "", proto: "" });
 const firingAlerts = ref([]);
 // 实时通道是否已建立
 const streamStarted = ref(false);
+// ---------- 流量排行（TOP N / 协议分布） ----------
+const topnRes = ref({});
+const topnSince = ref(3600);
+const topnLoading = ref(false);
+const topnError = ref("");
+let topnTimer = null;
+
+async function loadTopN() {
+  if (!connected.value) return;
+  topnLoading.value = true;
+  topnError.value = "";
+  try {
+    topnRes.value = await apiGet("/api/v1/topn?since=" + topnSince.value + "&n=10");
+  } catch (e) {
+    topnError.value = errText(e);
+  } finally {
+    topnLoading.value = false;
+  }
+}
+
+function setTopnRange(v) {
+  topnSince.value = v;
+  loadTopN();
+}
+
 // ---------- 多机（fleet） ----------
 const hostProbes = reactive({});
 const hostProbing = ref(false);
@@ -509,6 +579,14 @@ watch(
 
 // 打开主机面板时探测一次，之后每 15 秒刷新
 watch(nav, (v) => {
+  if (topnTimer) {
+    clearInterval(topnTimer);
+    topnTimer = null;
+  }
+  if (v === "topn") {
+    loadTopN();
+    topnTimer = setInterval(loadTopN, 15000);
+  }
   if (hostTimer) {
     clearInterval(hostTimer);
     hostTimer = null;
@@ -968,7 +1046,7 @@ async function connect() {
     }
     notify(connectMessage("ok", label));
     startTimers();
-    await Promise.all([refreshNow(), refreshHistory(), loadSessions(1), refreshAlerts(), loadActions(), loadActionHistory(), loadFiles()]);
+    await Promise.all([refreshNow(), refreshHistory(), loadSessions(1), refreshAlerts(), loadActions(), loadActionHistory(), loadFiles(), loadTopN()]);
     setupStream();
   } catch (e) {
     if (!isCurrentAttempt(attempt, seq)) return; // 已取消，失败结果直接丢弃
@@ -1592,6 +1670,10 @@ onBeforeUnmount(() => {
 }
 .history-line { display: flex; gap: 8px; font-size: 11px; padding: 2px 0; }
 .file-path { flex: 1; min-width: 90px; background: var(--panel2); border: 1px solid var(--line); color: var(--text); border-radius: 6px; padding: 4px 7px; font-size: 12px; outline: none; }
+.topn-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
+.topn-key { font-size: 12px; min-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topn-bar { flex: 1; height: 6px; background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.topn-bar i { display: block; height: 100%; background: var(--accent); }
 .host-row { display: flex; align-items: flex-start; gap: 7px; padding: 6px 0; border-bottom: 1px solid var(--line); }
 .host-main { flex: 1; min-width: 0; }
 .host-name { font-size: 13px; font-weight: 600; }
