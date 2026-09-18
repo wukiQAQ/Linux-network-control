@@ -67,8 +67,11 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # 是否由 systemd 管理（单元存在且 systemctl 可用）
 use_systemd() {
   have systemctl || return 1
-  systemctl list-unit-files "${SERVICE}.service" 2>/dev/null | grep -q "${SERVICE}.service" || return 1
-  return 0
+  if [ -f "/etc/systemd/system/${SERVICE}.service" ] || [ -f "/usr/lib/systemd/system/${SERVICE}.service" ]; then
+    return 0
+  fi
+  systemctl list-unit-files "${SERVICE}.service" 2>/dev/null | grep -q "${SERVICE}.service" && return 0
+  return 1
 }
 
 is_elf() {
@@ -132,7 +135,8 @@ kill_by_name() {
     [ "$pid" = "$$" ] && continue
     log "  结束进程 pid=$pid（按进程名匹配）"
     run "kill $pid 2>/dev/null || true"
-  done
+  done || true
+  return 0
 }
 
 latest_backup() {
@@ -144,8 +148,9 @@ rotate_backups() {
   list="$(ls -1t "${INSTALL_DIR%/}/${BIN_NAME}.bak."* 2>/dev/null || true)"
   [ -z "$list" ] && return 0
   echo "$list" | tail -n "+$((KEEP_BACKUPS + 1))" | while read -r old; do
-    [ -n "$old" ] && run "rm -f '${old}'"
-  done
+    if [ -n "$old" ]; then run "rm -f '${old}'"; fi
+  done || true
+  return 0
 }
 
 # ---------- 回滚模式 ----------
@@ -186,6 +191,7 @@ log "  $(ls -lh "$BINARY" | awk '{print "新二进制大小："$5}')"
 
 # 2) 停旧进程
 step "停止旧进程"
+set +e
 if use_systemd && sudo -n true 2>/dev/null; then
   # 有 systemd 单元且 sudo 免密：交给 systemd 管理最干净
   run "sudo systemctl stop '${SERVICE}'"
@@ -195,9 +201,10 @@ else
     warn "想用 systemd 管理，请用 ssh -t 连接后再执行本脚本，或配置 sudo 免密"
   fi
   kill_port_owner || true
-  kill_by_name
+  kill_by_name || true
 fi
-sleep 1
+set -e
+sleep 1 || true
 if [ "$DRY_RUN" != "1" ]; then
   if ! wait_port_free; then
     warn "端口 ${PORT} 仍被占用，请检查：sudo ss -ltnp | grep ':${PORT}'"
@@ -211,8 +218,7 @@ if [ -f "$TARGET" ]; then
   BACKUP="${TARGET}.bak.$(date +%Y%m%d-%H%M%S)"
   run "cp -a '${TARGET}' '${BACKUP}'"
   log "  备份：${BACKUP}"
-  run "true"
-  rotate_backups
+  rotate_backups || true
 else
   warn "安装位置没有旧二进制，跳过备份"
 fi
@@ -245,16 +251,19 @@ if [ "$DO_START" = "1" ] && [ "$DRY_RUN" != "1" ]; then
       body="$(wget -qO- --timeout=3 "http://127.0.0.1:${PORT}/api/v1/traffic/now" 2>/dev/null || true)"
     fi
     if [ -n "$body" ]; then
-      ver="$(printf '%s' "$body" | grep -o '"version":"[^"]*"' | head -n1 | cut -d'"' -f4)"
-      feat="$(printf '%s' "$body" | grep -o '"features":\[[^]]*\]' | head -n1)"
+      ver="$(printf '%s' "$body" | grep -o '"version":"[^"]*"' | head -n1 | cut -d'"' -f4 || true)"
+      feat="$(printf '%s' "$body" | grep -o '"features":\[[^]]*\]' | head -n1 || true)"
       log "  ${c_grn}服务已响应${c_off}  版本=${ver:-未上报}"
       log "  能力：${feat:-未上报}"
-      [ -n "$ver" ] && ok=1
+      if [ -n "$ver" ]; then ok=1; fi
       break
     fi
     sleep 1
   done
   if [ "$ok" = "1" ]; then
+    if ! use_systemd; then
+      log "${c_dim}提示：本次以进程方式启动（未使用 systemd）。如需开机自启，请参考使用指南配置 netmon.service${c_off}"
+    fi
     step "更新完成 ✅"
   else
     warn "服务已启动但未获取到版本信息（可能是旧版二进制，或端口不是 ${PORT}）"
