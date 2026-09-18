@@ -225,7 +225,15 @@ fi
 
 # 4) 安装新二进制
 step "安装新二进制"
-run "install -m 0755 '${BINARY}' '${TARGET}'"
+src_real="$(readlink -f "$BINARY" 2>/dev/null || echo "$BINARY")"
+dst_real="$(readlink -f "$TARGET" 2>/dev/null || echo "$TARGET")"
+if [ "$src_real" = "$dst_real" ]; then
+  warn "新二进制与安装位置是同一个文件（已就地覆盖），跳过复制，只确认权限"
+  warn "建议用暂存名上传（如 netmon-linux.new）再用 -b 指定，这样备份下来的才是旧版本"
+  run "chmod 0755 '${TARGET}'"
+else
+  run "install -m 0755 '${BINARY}' '${TARGET}'"
+fi
 
 # 5) 启动
 if [ "$DO_START" = "1" ]; then
