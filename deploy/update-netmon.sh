@@ -256,7 +256,8 @@ fi
 if [ "$DO_START" = "1" ]; then
   step "启动"
   if use_systemd; then
-    run "sudo systemctl start '${SERVICE}'"
+    # 用 restart 而不是 start：start 对已在运行的服务是空操作，会导致"更新了但还在跑旧进程"
+    run "sudo systemctl restart '${SERVICE}'"
   else
     run "cd '${INSTALL_DIR%/}' && nohup './${BIN_NAME}' -config '${CONFIG}' >> '${INSTALL_DIR%/}/netmon.log' 2>&1 &"
   fi
@@ -286,6 +287,16 @@ if [ "$DO_START" = "1" ] && [ "$DRY_RUN" != "1" ]; then
     sleep 1
   done
   if [ "$ok" = "1" ]; then
+    if use_systemd; then
+      main_pid="$(systemctl show -p MainPID --value "${SERVICE}" 2>/dev/null || true)"
+      if [ -n "${main_pid:-}" ] && [ "$main_pid" != "0" ] && [ -r "/proc/${main_pid}/exe" ]; then
+        running_bin="$(readlink -f "/proc/${main_pid}/exe" 2>/dev/null || true)"
+        log "  运行中的进程：pid=${main_pid}  exe=${running_bin}"
+        if [ "$running_bin" != "$(readlink -f "$TARGET" 2>/dev/null || echo "$TARGET")" ]; then
+          warn "注意：运行中的程序与安装位置不一致，请检查 systemd 单元是否指向了别的文件"
+        fi
+      fi
+    fi
     if ! use_systemd; then
       log "${c_dim}提示：本次以进程方式启动（未使用 systemd）。如需开机自启，请参考使用指南配置 netmon.service${c_off}"
     fi
