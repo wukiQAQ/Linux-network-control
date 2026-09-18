@@ -18,6 +18,7 @@
 - **存储**：SQLite（默认，纯 Go 驱动 modernc.org/sqlite），可切换 JSONL（file）
 - **数据源**：synthetic 合成 / pcap 回放 / Linux AF_PACKET 真实抓包
 - **远程访问**：Linux 端可选 Bearer Token 鉴权；Windows 客户端跨 IP 连接
+- **版本号规则**：小更新只加最后一位（`0.14.0` → `0.14.1`），成体系的一批功能才升次版本，详见《版本记录》
 
 ## 如何使用（快速上手）
 
