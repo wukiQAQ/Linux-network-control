@@ -34,7 +34,8 @@ $text = [System.IO.File]::ReadAllText($script).Replace("`r`n", "`n").Replace("`r
 
 $target = "$User@$Server"
 $cmds = @(
-  "scp `"$Binary`" `"$lfScript`" ${target}:$RemoteDir/",
+  "scp `"$Binary`" ${target}:$RemoteDir/netmon-linux",
+  "scp `"$lfScript`" ${target}:$RemoteDir/update-netmon.sh",
   "ssh $target `"chmod +x $RemoteDir/update-netmon.sh; $RemoteDir/update-netmon.sh -b $RemoteDir/netmon-linux -c $Config -s $Service -p $Port`""
 )
 
