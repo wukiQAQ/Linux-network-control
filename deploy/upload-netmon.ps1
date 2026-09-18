@@ -9,7 +9,7 @@ param(
   [Parameter(Mandatory = $true)][string]$Server,
   [string]$User = "wuki",
   [string]$RemoteDir = "~",
-  [string]$Binary = (Join-Path (Split-Path -Parent $PSScriptRoot) "netmon-linux"),
+  [string]$Binary = "",
   [string]$Config = "~/config.toml",
   [string]$Service = "netmon",
   [int]$Port = 8080,
@@ -17,7 +17,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$script = Join-Path $PSScriptRoot "update-netmon.sh"
+# 兼容不同调用方式：$PSScriptRoot 为空时用脚本自身路径推导
+$scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+$script = Join-Path $scriptDir "update-netmon.sh"
+if ([string]::IsNullOrWhiteSpace($Binary)) {
+  $Binary = Join-Path (Split-Path -Parent $scriptDir) "netmon-linux"
+}
 if (-not (Test-Path -LiteralPath $Binary)) { throw "找不到本地二进制：$Binary" }
 if (-not (Test-Path -LiteralPath $script)) { throw "找不到脚本：$script" }
 
