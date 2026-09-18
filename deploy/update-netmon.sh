@@ -302,7 +302,26 @@ if [ "$DO_START" = "1" ] && [ "$DRY_RUN" != "1" ]; then
     fi
     step "更新完成 ✅"
   else
-    warn "服务已启动但未获取到版本信息（可能是旧版二进制，或端口不是 ${PORT}）"
+    warn "服务已启动但未获取到版本信息 —— 下面自动收集诊断信息："
+    if have systemctl; then
+      log "${c_dim}--- systemctl status ${SERVICE} ---${c_off}"
+      systemctl status "${SERVICE}" --no-pager -l 2>&1 | head -n 10 || true
+      if have journalctl; then
+        log "${c_dim}--- journalctl -u ${SERVICE} -n 15 ---${c_off}"
+        journalctl -u "${SERVICE}" -n 15 --no-pager 2>&1 | tail -n 15 || true
+      fi
+    fi
+    log "${c_dim}--- 文件与权限 ---${c_off}"
+    ls -l "$TARGET" 2>&1 || true
+    (file "$TARGET" 2>/dev/null || true)
+    log "${c_dim}--- 挂载与 SELinux ---${c_off}"
+    findmnt -no OPTIONS "$(dirname "$TARGET")" 2>/dev/null || true
+    if have getenforce; then getenforce 2>/dev/null || true; fi
+    warn "常见原因：① 目录为 noexec 挂载 ② SELinux 阻止执行 home 目录下的文件 ③ 权限位丢失"
+    warn "通用修法：sudo install -m 0755 '$TARGET' /usr/local/bin/${BIN_NAME}"
+    warn "         sudo sed -i 's#^ExecStart=.*#ExecStart=/usr/local/bin/${BIN_NAME} -config ${CONFIG}#' /etc/systemd/system/${SERVICE}.service"
+    warn "         sudo systemctl daemon-reload && sudo systemctl restart ${SERVICE}"
+    warn "另外：live 抓包需要 root 或 CAP_NET_RAW（unit 里应保留 AmbientCapabilities=CAP_NET_RAW）"
     warn "查看日志：tail -n 30 ${INSTALL_DIR%/}/netmon.log"
   fi
   log "${c_dim}回滚命令：${0} --rollback${c_off}"
