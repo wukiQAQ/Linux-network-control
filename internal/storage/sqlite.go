@@ -37,6 +37,11 @@ func OpenSQLiteStore(path string, retention time.Duration) (*SQLiteStore, error)
 		db.Close()
 		return nil, err
 	}
+	// WAL + NORMAL：兼顾耐久性与写入吞吐（长时间运行时差别很明显）
+	if _, err := db.Exec(`PRAGMA synchronous=NORMAL`); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
 		db.Close()
 		return nil, err
@@ -64,6 +69,9 @@ func OpenSQLiteStore(path string, retention time.Duration) (*SQLiteStore, error)
 			machine_id TEXT
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_flows_start ON flows(start)`,
+		`CREATE INDEX IF NOT EXISTS idx_flows_proto_start ON flows(proto, start)`,
+		`CREATE INDEX IF NOT EXISTS idx_flows_src_ip ON flows(src_ip)`,
+		`CREATE INDEX IF NOT EXISTS idx_flows_dst_ip ON flows(dst_ip)`,
 	}
 	for _, q := range schema {
 		if _, err := db.Exec(q); err != nil {
@@ -83,6 +91,40 @@ func (s *SQLiteStore) AppendMetric(p MetricPoint) error {
 		`INSERT INTO metrics(ts, series, tags, value) VALUES(?, ?, ?, ?)`,
 		p.Ts.UnixNano(), p.Series, string(tags), p.Value)
 	return err
+}
+
+// AppendMetrics 在一个事务里批量插入指标：每秒 5 个指标只需一次提交。
+func (s *SQLiteStore) AppendMetrics(points []MetricPoint) error {
+	if len(points) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`INSERT INTO metrics(ts, series, tags, value) VALUES(?, ?, ?, ?)`)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	for _, p := range points {
+		tags, terr := json.Marshal(p.Tags)
+		if terr != nil {
+			_ = stmt.Close()
+			_ = tx.Rollback()
+			return terr
+		}
+		if _, err := stmt.Exec(p.Ts.UnixNano(), p.Series, string(tags), p.Value); err != nil {
+			_ = stmt.Close()
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	if err := stmt.Close(); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) AppendFlow(f FlowRecord) error {

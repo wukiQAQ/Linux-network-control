@@ -55,6 +55,8 @@ type SessionFilter struct {
 // Backend 存储接口：SQLite/InfluxDB/ClickHouse 都可作为实现。
 type Backend interface {
 	AppendMetric(p MetricPoint) error
+	// AppendMetrics 批量写入指标（一次事务/一次刷盘，显著减少长时间运行的写放大）
+	AppendMetrics(points []MetricPoint) error
 	AppendFlow(f FlowRecord) error
 	QueryMetrics(series string, from, to time.Time) ([]MetricPoint, error)
 	QuerySessions(f SessionFilter, limit, offset int) ([]FlowRecord, int, error)
@@ -139,6 +141,16 @@ func (s *FileStore) AppendMetric(p MetricPoint) error {
 	defer s.mu.Unlock()
 	s.metrics = append(s.metrics, p)
 	return writeLine(s.mf, metricLine{Ts: p.Ts.UnixNano(), Series: p.Series, Tags: p.Tags, Value: p.Value})
+}
+
+// AppendMetrics 批量追加指标（文件后端逐条追加，一次调用即可）。
+func (s *FileStore) AppendMetrics(points []MetricPoint) error {
+	for _, p := range points {
+		if err := s.AppendMetric(p); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *FileStore) AppendFlow(f FlowRecord) error {

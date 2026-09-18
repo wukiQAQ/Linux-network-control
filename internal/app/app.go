@@ -123,13 +123,16 @@ func (a *App) persistMetrics(s aggregator.Sample) {
 		"traffic.closedconns": float64(s.Closed),
 		"traffic.drops":       float64(s.DropEvents),
 	}
+	points := make([]storage.MetricPoint, 0, len(vals))
 	for series, v := range vals {
-		if err := a.Store.AppendMetric(storage.MetricPoint{
+		points = append(points, storage.MetricPoint{
 			Ts: s.Ts, Series: series, Value: v,
 			Tags: map[string]string{"machine_id": a.Cfg.MachineID},
-		}); err != nil {
-			log.Printf("[app] 指标落盘失败 series=%s: %v", series, err)
-		}
+		})
+	}
+	// 批量写入：每周期 6 个指标一次事务/一次刷盘
+	if err := a.Store.AppendMetrics(points); err != nil {
+		log.Printf("[app] 指标批量落盘失败: %v", err)
 	}
 }
 

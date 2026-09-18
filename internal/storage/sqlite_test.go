@@ -2,6 +2,7 @@ package storage
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -40,5 +41,55 @@ func TestSQLiteMetricAndFlow(t *testing.T) {
 	}
 	if err := s.Prune(base.Add(24 * time.Hour)); err != nil {
 		t.Fatalf("Prune: %v", err)
+	}
+}
+
+// TestSQLiteBasics 验证基础优化：批量写入可用、WAL+NORMAL 生效、会话索引存在。
+func TestSQLiteBasics(t *testing.T) {
+	path := t.TempDir() + "/netmon.db"
+	st, err := OpenSQLiteStore(path, time.Hour)
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore: %v", err)
+	}
+	defer st.Close()
+
+	// 1) 批量写入 6 个指标
+	now := time.Now().UTC()
+	points := []MetricPoint{
+		{Ts: now, Series: "traffic.bps", Value: 1},
+		{Ts: now, Series: "traffic.pps", Value: 2},
+		{Ts: now, Series: "traffic.conns", Value: 3},
+		{Ts: now, Series: "traffic.newconns", Value: 4},
+		{Ts: now, Series: "traffic.closedconns", Value: 5},
+		{Ts: now, Series: "traffic.drops", Value: 6},
+	}
+	if err := st.AppendMetrics(points); err != nil {
+		t.Fatalf("AppendMetrics: %v", err)
+	}
+	got, err := st.QueryMetrics("traffic.closedconns", now.Add(-time.Minute), now.Add(time.Minute))
+	if err != nil || len(got) != 1 || got[0].Value != 5 {
+		t.Fatalf("批量写入后查询异常: %v %v", got, err)
+	}
+	// 空切片不应报错
+	if err := st.AppendMetrics(nil); err != nil {
+		t.Errorf("空批量应直接返回: %v", err)
+	}
+
+	// 2) PRAGMA：WAL + synchronous=NORMAL(1)
+	var mode string
+	if err := st.db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil || strings.ToLower(mode) != "wal" {
+		t.Errorf("journal_mode 应为 wal，实际 %q (%v)", mode, err)
+	}
+	var sync int
+	if err := st.db.QueryRow(`PRAGMA synchronous`).Scan(&sync); err != nil || sync != 1 {
+		t.Errorf("synchronous 应为 1(NORMAL)，实际 %d (%v)", sync, err)
+	}
+
+	// 3) 索引存在
+	for _, idx := range []string{"idx_metrics_series_ts", "idx_flows_start", "idx_flows_proto_start", "idx_flows_src_ip", "idx_flows_dst_ip"} {
+		var n int
+		if err := st.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?`, idx).Scan(&n); err != nil || n != 1 {
+			t.Errorf("索引 %s 不存在 (%v)", idx, err)
+		}
 	}
 }
