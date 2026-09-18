@@ -187,7 +187,12 @@ if [ "$DO_FIX_SYSTEMD" = "1" ]; then
   run "sudo sed -i 's#^sqlite_path.*#sqlite_path = \"/var/lib/netmon/netmon.db\"#' /etc/netmon/config.toml || true"
   run "sudo sed -i 's#^data_dir.*#data_dir = \"/var/lib/netmon\"#' /etc/netmon/config.toml || true"
   run "sudo chmod 0644 /etc/netmon/config.toml || true"
-  run "sudo install -m 0755 '${TARGET}' '/usr/local/bin/${BIN_NAME}'"
+  # 幂等：目标已经在 /usr/local/bin 时不再重复安装（否则 install 会报"同一文件"）
+  if [ "$(readlink -f "$TARGET" 2>/dev/null || echo "$TARGET")" = "$(readlink -f "/usr/local/bin/${BIN_NAME}" 2>/dev/null || echo "/usr/local/bin/${BIN_NAME}")" ]; then
+    log "  程序已在 /usr/local/bin/${BIN_NAME}，跳过复制"
+  else
+    run "sudo install -m 0755 '${TARGET}' '/usr/local/bin/${BIN_NAME}'"
+  fi
   unit_tmp="$(mktemp)"
   cat > "$unit_tmp" <<UNIT_EOF
 [Unit]
