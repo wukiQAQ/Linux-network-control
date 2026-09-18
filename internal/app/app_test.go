@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/wukiQAQ/Linux-network-control/internal/aggregator"
+	"github.com/wukiQAQ/Linux-network-control/internal/alert"
 	"github.com/wukiQAQ/Linux-network-control/internal/capture"
 	"github.com/wukiQAQ/Linux-network-control/internal/config"
 	"github.com/wukiQAQ/Linux-network-control/internal/flow"
@@ -131,5 +132,52 @@ func TestAppDumperHook(t *testing.T) {
 	}
 	if res.Bytes != uint64(len(pkt.Raw)) {
 		t.Fatalf("导出字节数错误: %d != %d", res.Bytes, len(pkt.Raw))
+	}
+}
+
+// TestAlertAutoCapture 验证告警联动：触发告警时自动开始导出抓包。
+func TestAlertAutoCapture(t *testing.T) {
+	cfg := config.Default()
+	cfg.Alert.AutoCapture = true
+	cfg.Alert.AutoCaptureSeconds = 5
+	store, err := storage.OpenFileStore(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	table := flow.NewTable(time.Minute, 5*time.Minute, nil)
+	agg := aggregator.New(100)
+	dumper := capture.NewDumper(t.TempDir())
+	a := New(cfg, capture.NewSynthetic(1000, "eth0"), table, agg, store)
+	a.Dumper = dumper
+	a.Alerts = alert.New([]alert.Rule{
+		{ID: "drops-high", Series: "traffic.drops", Threshold: 0.5, For: 0},
+	}, "")
+
+	// 制造一次丢包，使 traffic.drops > 阈值
+	agg.RecordDrop()
+	now := time.Now().UTC()
+	a.TickOnce(now)
+	a.TickOnce(now.Add(time.Second))
+
+	res, active := dumper.Status()
+	if !active {
+		t.Fatalf("告警触发后应自动开始抓包，实际未开始（%+v）", res)
+	}
+	if res.Seconds != 5 {
+		t.Errorf("自动抓包时长应为 5 秒，实际 %d", res.Seconds)
+	}
+	if _, err := dumper.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// 关闭开关后不应再自动抓包
+	cfg.Alert.AutoCapture = false
+	agg.RecordDrop()
+	a.TickOnce(now.Add(2 * time.Second))
+	a.TickOnce(now.Add(3 * time.Second))
+	if _, active := dumper.Status(); active {
+		t.Error("开关关闭时不应自动抓包")
 	}
 }

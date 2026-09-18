@@ -31,4 +31,6 @@ conns_threshold = 0        # 并发连接数阈值
 conns_for_secs = 30
 drops_threshold = 0        # 每秒丢包数阈值
 drops_for_secs = 30
-webhook = ""               # 触发时通知的 URL（如企业微信/钉钉机器人），留空仅记录
+webhook = ""               # 触发时通知的 URL
+auto_capture = false       # 告警触发时自动导出抓包（便于事后用 Wireshark 分析）
+auto_capture_seconds = 15  # 自动抓包时长（秒，1~60）（如企业微信/钉钉机器人），留空仅记录

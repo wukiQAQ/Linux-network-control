@@ -14,16 +14,18 @@ import (
 
 // AlertConfig 汇总可选告警配置；阈值为 0 表示不启用对应规则。
 type AlertConfig struct {
-	Enabled        bool    // 是否启用告警引擎
-	BpsThreshold   float64 // traffic.bps 阈值（bit/s）
-	BpsForSecs     int     // 持续超过阈值多少秒触发
-	PpsThreshold   float64 // traffic.pps 阈值（包/s）
-	PpsForSecs     int
-	ConnsThreshold float64 // traffic.conns 并发连接阈值
-	ConnsForSecs   int
-	DropsThreshold float64 // traffic.drops 每秒丢包阈值
-	DropsForSecs   int
-	Webhook        string // 触发通知 URL（可选）
+	Enabled            bool    // 是否启用告警引擎
+	BpsThreshold       float64 // traffic.bps 阈值（bit/s）
+	BpsForSecs         int     // 持续超过阈值多少秒触发
+	PpsThreshold       float64 // traffic.pps 阈值（包/s）
+	PpsForSecs         int
+	ConnsThreshold     float64 // traffic.conns 并发连接阈值
+	ConnsForSecs       int
+	DropsThreshold     float64 // traffic.drops 每秒丢包阈值
+	DropsForSecs       int
+	Webhook            string // 触发通知 URL（可选）
+	AutoCapture        bool   // 告警触发时是否自动导出抓包（默认关闭）
+	AutoCaptureSeconds int    // 自动抓包时长（秒）
 }
 
 // Config 汇总各模块需要的运行参数。
@@ -58,10 +60,11 @@ func Default() *Config {
 		Retention:  24 * time.Hour,
 		Listen:     ":8080",
 		Alert: AlertConfig{
-			BpsForSecs:   30,
-			PpsForSecs:   30,
-			ConnsForSecs: 30,
-			DropsForSecs: 30,
+			BpsForSecs:         30,
+			PpsForSecs:         30,
+			ConnsForSecs:       30,
+			DropsForSecs:       30,
+			AutoCaptureSeconds: 15,
 		},
 	}
 }
@@ -202,6 +205,16 @@ func (c *Config) apply(v map[string]string) {
 	}
 	if s, ok := v["alert.webhook"]; ok {
 		c.Alert.Webhook = s
+	}
+	if s, ok := v["alert.auto_capture"]; ok {
+		if b, err := strconv.ParseBool(s); err == nil {
+			c.Alert.AutoCapture = b
+		}
+	}
+	if n, ok := v["alert.auto_capture_seconds"]; ok {
+		if i, err := strconv.Atoi(n); err == nil && i > 0 {
+			c.Alert.AutoCaptureSeconds = i
+		}
 	}
 }
 

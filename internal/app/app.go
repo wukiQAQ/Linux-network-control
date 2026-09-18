@@ -82,6 +82,18 @@ func (a *App) evaluateAlerts(now time.Time, s aggregator.Sample) {
 	for _, ev := range a.Alerts.Evaluate(now, pts) {
 		log.Printf("[alert] %s %s rule=%s value=%.0f threshold=%.0f",
 			ev.Status, ev.Series, ev.RuleID, ev.Value, ev.Threshold)
+		// 告警联动：触发时自动导出抓包，便于事后用 Wireshark 分析
+		if ev.Status == "firing" && a.Cfg.Alert.AutoCapture && a.Dumper != nil {
+			secs := a.Cfg.Alert.AutoCaptureSeconds
+			if secs <= 0 {
+				secs = 15
+			}
+			if res, err := a.Dumper.Start(secs); err != nil {
+				log.Printf("[alert] 自动抓包未启动: %v", err)
+			} else {
+				log.Printf("[alert] 已自动开始抓包 %d 秒（规则 %s），结束后可在客户端下载", res.Seconds, ev.RuleID)
+			}
+		}
 	}
 }
 
