@@ -153,6 +153,20 @@ rotate_backups() {
   return 0
 }
 
+# ---------- 与 systemd 单元保持一致 ----------
+# 如果单元的 ExecStart 指向别的路径，就安装到那个路径，否则更新完还在跑旧程序
+if [ "$DO_ROLLBACK" != "1" ] && use_systemd; then
+  unit_bin="$(systemctl cat "${SERVICE}.service" 2>/dev/null | awk -F= '/^ExecStart=/{print $2; exit}' | awk '{print $1}' || true)"
+  if [ -n "${unit_bin:-}" ] && [ "$unit_bin" != "$TARGET" ]; then
+    warn "systemd 单元 ExecStart 指向：${unit_bin}"
+    warn "与安装位置 ${TARGET} 不一致 —— 本次改为安装到 ${unit_bin}（否则新程序不会被 systemd 启动）"
+    TARGET="$unit_bin"
+    BIN_NAME="$(basename "$TARGET")"
+  elif [ -n "${unit_bin:-}" ]; then
+    log "  systemd ExecStart 校验：与安装位置一致"
+  fi
+fi
+
 # ---------- 回滚模式 ----------
 if [ "$DO_ROLLBACK" = "1" ]; then
   BACKUP="$(latest_backup)"
@@ -227,12 +241,15 @@ fi
 step "安装新二进制"
 src_real="$(readlink -f "$BINARY" 2>/dev/null || echo "$BINARY")"
 dst_real="$(readlink -f "$TARGET" 2>/dev/null || echo "$TARGET")"
+target_dir="$(dirname "$TARGET")"
 if [ "$src_real" = "$dst_real" ]; then
   warn "新二进制与安装位置是同一个文件（已就地覆盖），跳过复制，只确认权限"
-  warn "建议用暂存名上传（如 netmon-linux.new）再用 -b 指定，这样备份下来的才是旧版本"
   run "chmod 0755 '${TARGET}'"
-else
+elif [ -w "$target_dir" ]; then
   run "install -m 0755 '${BINARY}' '${TARGET}'"
+else
+  warn "目录 ${target_dir} 当前用户不可写，使用 sudo 安装"
+  run "sudo install -m 0755 '${BINARY}' '${TARGET}'"
 fi
 
 # 5) 启动
