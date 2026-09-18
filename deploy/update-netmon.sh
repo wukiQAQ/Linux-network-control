@@ -31,6 +31,7 @@ PORT="8080"
 DO_START=1
 DRY_RUN=0
 DO_ROLLBACK=0
+DO_FIX_SYSTEMD=0
 KEEP_BACKUPS=3
 
 c_red=$'\033[31m'; c_grn=$'\033[32m'; c_yel=$'\033[33m'; c_dim=$'\033[2m'; c_off=$'\033[0m'
@@ -53,6 +54,7 @@ while [ $# -gt 0 ]; do
     -p|--port)    PORT="${2:?缺少参数}"; shift 2 ;;
     -n|--no-start) DO_START=0; shift ;;
     --rollback)   DO_ROLLBACK=1; shift ;;
+    --fix-systemd) DO_FIX_SYSTEMD=1; shift ;;
     --dry-run)    DRY_RUN=1; shift ;;
     -h|--help)    usage; exit 0 ;;
     *)            die "未知参数：$1（用 -h 查看用法）" ;;
@@ -165,6 +167,59 @@ if [ "$DO_ROLLBACK" != "1" ] && use_systemd; then
   elif [ -n "${unit_bin:-}" ]; then
     log "  systemd ExecStart 校验：与安装位置一致"
   fi
+fi
+
+# ---------- 整理 systemd 环境模式 ----------
+# 解决两类常见问题：① SELinux/exec 限制执行 /home 下的文件（改为装到 /usr/local/bin）
+#                    ② systemd 的 ProtectHome 让服务读不到 /home 下的 config.toml
+#                        （把配置与数据搬到 /etc/netmon 与 /var/lib/netmon）
+if [ "$DO_FIX_SYSTEMD" = "1" ]; then
+  step "整理 systemd 运行环境"
+  run "sudo mkdir -p /etc/netmon /var/lib/netmon"
+  if [ -f "$CONFIG" ]; then
+    run "sudo cp -f '${CONFIG}' /etc/netmon/config.toml"
+  else
+    warn "本地配置 ${CONFIG} 不存在，将跳过复制（请确认 /etc/netmon/config.toml 已存在）"
+  fi
+  if [ -f "${INSTALL_DIR%/}/netmon.db" ]; then
+    run "sudo cp -n '${INSTALL_DIR%/}/netmon.db' /var/lib/netmon/netmon.db || true"
+  fi
+  run "sudo sed -i 's#^sqlite_path.*#sqlite_path = \"/var/lib/netmon/netmon.db\"#' /etc/netmon/config.toml || true"
+  run "sudo sed -i 's#^data_dir.*#data_dir = \"/var/lib/netmon\"#' /etc/netmon/config.toml || true"
+  run "sudo chmod 0644 /etc/netmon/config.toml || true"
+  run "sudo install -m 0755 '${TARGET}' '/usr/local/bin/${BIN_NAME}'"
+  unit_tmp="$(mktemp)"
+  cat > "$unit_tmp" <<UNIT_EOF
+[Unit]
+Description=MeTD netmon - Linux 网络流量监控
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/${BIN_NAME} -config /etc/netmon/config.toml
+WorkingDirectory=/var/lib/netmon
+Restart=on-failure
+ProtectHome=no
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target
+UNIT_EOF
+  run "sudo install -m 0644 '${unit_tmp}' '/etc/systemd/system/${SERVICE}.service'"
+  rm -f "$unit_tmp"
+  run "sudo systemctl daemon-reload"
+  run "sudo systemctl restart '${SERVICE}'"
+  [ "$DRY_RUN" = "1" ] || sleep 2
+  step "校验"
+  if have curl; then
+    body="$(curl -fsS --max-time 3 "http://127.0.0.1:${PORT}/api/v1/traffic/now" 2>/dev/null || true)"
+    ver="$(printf '%s' "$body" | grep -o '"version":"[^"]*"' | head -n1 | cut -d'"' -f4 || true)"
+    feat="$(printf '%s' "$body" | grep -o '"features":\[[^]]*\]' | head -n1 || true)"
+    log "  版本=${ver:-未上报}"
+    log "  能力：${feat:-未上报}"
+  fi
+  systemctl status "${SERVICE}" --no-pager -l 2>&1 | head -n 8 || true
+  exit 0
 fi
 
 # ---------- 回滚模式 ----------
