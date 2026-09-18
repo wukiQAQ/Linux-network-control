@@ -8,11 +8,11 @@ import (
 func TestTickRates(t *testing.T) {
 	t0 := time.Unix(1700000000, 0).UTC()
 	a := New(100)
-	a.Tick(t0, 5, 0) // 首帧只建立基准
+	a.Tick(t0, 5, 0, 0) // 首帧只建立基准
 	a.Observe(1500)
 	a.Observe(1500)
 	a.RecordDrop()
-	s := a.Tick(t0.Add(time.Second), 6, 1)
+	s := a.Tick(t0.Add(time.Second), 6, 1, 0)
 	if s.Bps != 24000 { // 3000 字节 * 8 bit / 1s
 		t.Errorf("Bps=%v, want 24000", s.Bps)
 	}
@@ -31,7 +31,7 @@ func TestRingCapacity(t *testing.T) {
 	a := New(5)
 	base := time.Unix(1700000000, 0).UTC()
 	for i := 0; i < 20; i++ {
-		a.Tick(base.Add(time.Duration(i)*time.Second), i, uint64(i))
+		a.Tick(base.Add(time.Duration(i)*time.Second), i, uint64(i), 0)
 	}
 	if got := len(a.History()); got != 5 {
 		t.Errorf("环形缓冲长度=%d, want 5", got)

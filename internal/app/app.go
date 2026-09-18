@@ -51,7 +51,7 @@ func (a *App) HandlePacket(p *capture.Packet) bool {
 
 // TickOnce 执行一个聚合周期：输出采样、过期会话落盘、指标持久化、按策略清理。
 func (a *App) TickOnce(now time.Time) aggregator.Sample {
-	s := a.Agg.Tick(now, a.Table.Active(), a.Table.Created())
+	s := a.Agg.Tick(now, a.Table.Active(), a.Table.Created(), a.Table.Closed())
 	for _, f := range a.Table.Expire(now) {
 		if err := a.Store.AppendFlow(a.toRecord(f)); err != nil {
 			log.Printf("[app] 流记录落盘失败: %v", err)
@@ -116,11 +116,12 @@ func (a *App) toRecord(f flow.Flow) storage.FlowRecord {
 
 func (a *App) persistMetrics(s aggregator.Sample) {
 	vals := map[string]float64{
-		"traffic.bps":      s.Bps,
-		"traffic.pps":      s.Pps,
-		"traffic.conns":    float64(s.Active),
-		"traffic.newconns": float64(s.NewConns),
-		"traffic.drops":    float64(s.DropEvents),
+		"traffic.bps":         s.Bps,
+		"traffic.pps":         s.Pps,
+		"traffic.conns":       float64(s.Active),
+		"traffic.newconns":    float64(s.NewConns),
+		"traffic.closedconns": float64(s.Closed),
+		"traffic.drops":       float64(s.DropEvents),
 	}
 	for series, v := range vals {
 		if err := a.Store.AppendMetric(storage.MetricPoint{

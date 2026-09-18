@@ -120,6 +120,7 @@ func (s *Server) statsMap() map[string]any {
 		"pps":          last.Pps,
 		"conns":        last.Active,
 		"new_conns":    last.NewConns,
+		"closed_conns": last.Closed,
 		"recv_packets": recv,
 		"drop_packets": drop,
 		"drop_rate":    rate,

@@ -38,6 +38,11 @@ type Flow struct {
 	DstIP    netip.Addr
 	SPort    uint16
 	DPort    uint16
+	// TCP 状态机相关标记
+	SawSYN bool // 见过 SYN（连接建立）
+	SawFIN bool // 见过 FIN（正常关闭）
+	SawRST bool // 见过 RST（异常关闭）
+	Closed bool // 是否已计入关闭（避免重复计数）
 }
 
 // Table 是并发安全的会话表。
@@ -49,6 +54,7 @@ type Table struct {
 	clock func() time.Time
 
 	created uint64 // 历史创建总数，供聚合层计算"新建连接速率"
+	closed  uint64 // 历史关闭总数（FIN/RST），供聚合层计算"关闭连接速率"
 }
 
 // NewTable 创建流表。idle/hard 为过期阈值；clock 便于测试注入时间。
@@ -77,6 +83,22 @@ func (t *Table) Handle(proto uint8, src, dst netip.Addr, sport, dport uint16, fl
 	f.Packets++
 	f.Bytes += uint64(length)
 	f.TCPFlags |= flags
+	// TCP 状态机：SYN 表示建立，FIN/RST 表示关闭（每条流只计一次关闭）
+	if proto == 6 {
+		if flags&0x02 != 0 {
+			f.SawSYN = true
+		}
+		if flags&0x01 != 0 {
+			f.SawFIN = true
+		}
+		if flags&0x04 != 0 {
+			f.SawRST = true
+		}
+		if !f.Closed && (f.SawFIN || f.SawRST) {
+			f.Closed = true
+			t.closed++
+		}
+	}
 }
 
 // Expire 清理超时会话并返回其快照（供存储层落盘）。
@@ -105,6 +127,13 @@ func (t *Table) Created() uint64 {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.created
+}
+
+// Closed 返回历史上累计关闭的 TCP 连接数（FIN/RST）。
+func (t *Table) Closed() uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.closed
 }
 
 // Snapshot 返回当前全部会话（健康页/调试用）。

@@ -16,21 +16,23 @@ type Sample struct {
 	Pps        float64
 	Active     int
 	NewConns   int
+	Closed     int
 	DropEvents int
 }
 
 // Agg 把逐包事件累加并按 tick 输出采样。
 type Agg struct {
-	mu      sync.Mutex
-	bytes   uint64
-	pkts    uint64 // 当前周期包数（tick 后清零）
-	total   uint64 // 历史累计包数（健康页收包总数）
-	drops   uint64
-	lastSec uint64
-	lastD   uint64
-	last    time.Time
-	ring    []Sample
-	maxRing int
+	mu         sync.Mutex
+	bytes      uint64
+	pkts       uint64 // 当前周期包数（tick 后清零）
+	total      uint64 // 历史累计包数（健康页收包总数）
+	drops      uint64
+	lastSec    uint64
+	lastClosed uint64
+	lastD      uint64
+	last       time.Time
+	ring       []Sample
+	maxRing    int
 }
 
 func New(maxSamples int) *Agg {
@@ -67,7 +69,7 @@ func (a *Agg) TotalDrops() uint64 {
 }
 
 // Tick 输出采样并清零周期计数。active/created 由流表提供。
-func (a *Agg) Tick(now time.Time, active int, created uint64) Sample {
+func (a *Agg) Tick(now time.Time, active int, created uint64, closed uint64) Sample {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	s := Sample{Ts: now}
@@ -86,12 +88,16 @@ func (a *Agg) Tick(now time.Time, active int, created uint64) Sample {
 	if created > a.lastSec {
 		s.NewConns = int(created - a.lastSec)
 	}
+	if closed > a.lastClosed {
+		s.Closed = int(closed - a.lastClosed)
+	}
 	s.Active = active
 	if created > a.lastSec {
 		s.NewConns = int(created - a.lastSec)
 	}
 	a.bytes, a.pkts = 0, 0
 	a.lastSec = created
+	a.lastClosed = closed
 	a.lastD = a.drops
 	a.last = now
 	a.ring = append(a.ring, s)

@@ -5,7 +5,7 @@
 package buildinfo
 
 // Version 是采集端版本号，与客户端保持同一主线。
-const Version = "0.14.0"
+const Version = "0.14.1"
 
 // Features 列出该版本对外提供的可选能力；新增能力时在此追加。
 var Features = []string{"history", "sessions", "alerts", "capture.dump", "actions.run", "files", "stream", "topn"}

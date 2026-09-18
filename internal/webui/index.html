@@ -83,7 +83,7 @@
   <section class="kpis">
     <div class="kpi"><div class="lab">当前带宽</div><div class="val" id="vBw">--</div><div class="sub">pps <span id="vPps">--</span></div></div>
     <div class="kpi"><div class="lab">包速率</div><div class="val" id="vPps2">--</div><div class="sub">累计 <span id="vRecv">--</span> 包</div></div>
-    <div class="kpi"><div class="lab">并发连接</div><div class="val" id="vConn">--</div><div class="sub">新建 <span id="vNew">--</span>/s</div></div>
+    <div class="kpi"><div class="lab">并发连接</div><div class="val" id="vConn">--</div><div class="sub">新建 <span id="vNew">--</span>/s · 关闭 <span id="vClosed">--</span>/s</div></div>
     <div class="kpi"><div class="lab">系统状态</div><div><span class="badge ok" id="vHealth">健康</span></div><div class="sub">运行 <span id="vUp">--</span></div></div>
   </section>
 
@@ -190,6 +190,7 @@ async function refreshNow() {
     $("vRecv").textContent = fmtNum(last.recv_packets);
     $("vConn").textContent = fmtNum(last.conns);
     $("vNew").textContent = fmtNum(last.new_conns);
+    $("vClosed").textContent = fmtNum(last.closed_conns);
     const up = last.uptime_s, p = n => String(n).padStart(2, "0");
     $("vUp").textContent = p(Math.floor(up / 3600)) + ":" + p(Math.floor(up % 3600 / 60)) + ":" + p(up % 60);
     const bad = last.drop_packets > 0 || last.drop_rate > 0.0001;
