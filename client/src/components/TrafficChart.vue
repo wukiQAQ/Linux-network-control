@@ -2,7 +2,7 @@
   <div class="card chart-card">
     <div class="chart-head">
       <span>历史流量曲线（最近 1 小时）</span>
-      <span class="muted">{{ updatedText }}</span>
+      <span class="muted">{{ updatedText }} · {{ smoothText }}</span>
     </div>
     <div class="chart-toolbar">
       <button
@@ -26,6 +26,17 @@
         </svg>
         <span>{{ m.label }}</span>
       </button>
+      <span class="tool-sep"></span>
+      <span class="muted zoom-info">平滑</span>
+      <button
+        v-for="l in SMOOTH_LEVELS"
+        :key="l.value"
+        class="mode-btn"
+        :class="{ active: smoothLevel === l.value }"
+        type="button"
+        :title="l.value === 'off' ? '关闭平滑（显示原始瞬时值）' : '显示平滑：窗口 ' + l.window + ' 点，只影响曲线形状，不改服务端数据'"
+        @click="setSmooth(l.value)"
+      >{{ l.label }}</button>
       <span class="tool-sep"></span>
       <button class="mode-btn" type="button" title="放大时间轴（也可用鼠标滚轮）" @click="applyZoom('in')">放大 ＋</button>
       <button class="mode-btn" type="button" title="缩小时间轴" @click="applyZoom('out')">缩小 －</button>
@@ -55,6 +66,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
 import * as echarts from "echarts";
 import { clampRange, zoomLabel, zoomRange } from "../chartzoom.js";
 import { AXIS_STORE_KEY, axisHint, axisLimits, normalizeAxisConfig, parseAxisInput } from "../axis.js";
+import { SMOOTH_LEVELS, smoothLabel, smoothSeries } from "../smooth.js";
 
 const props = defineProps({
   points: { type: Array, default: () => [] },
@@ -66,6 +78,28 @@ defineEmits(["update-mode"]);
 const el = ref(null);
 const updatedText = ref("");
 let chart = null;
+
+// 显示平滑：默认"轻"，可关闭（关/轻/中/强），本地记忆
+const SMOOTH_KEY = "netmon.smooth.v1";
+function loadSmooth() {
+  try {
+    const v = localStorage.getItem(SMOOTH_KEY);
+    return SMOOTH_LEVELS.some((l) => l.value === v) ? v : "low";
+  } catch {
+    return "low";
+  }
+}
+const smoothLevel = ref(loadSmooth());
+const smoothText = computed(() => "平滑：" + smoothLabel(smoothLevel.value));
+function setSmooth(v) {
+  smoothLevel.value = SMOOTH_LEVELS.some((l) => l.value === v) ? v : "off";
+  try {
+    localStorage.setItem(SMOOTH_KEY, smoothLevel.value);
+  } catch {
+    // 忽略存储失败
+  }
+  render();
+}
 
 // 缩放区间（百分比，与 ECharts dataZoom 一致）：默认展示完整时间范围
 const zoom = ref({ start: 0, end: 100 });
@@ -280,7 +314,8 @@ function buildOption(points, mode, p, z, a) {
 
 function render() {
   if (!chart) return;
-  const pts = props.points || [];
+  // 先做显示平滑，再算坐标轴与曲线：既能压住毛刺，也让锁定/自动上限更稳
+  const pts = smoothSeries(props.points || [], smoothLevel.value);
   const dataMax = {
     bps: Math.max(0, ...pts.map((p) => Number(p.bps) || 0)),
     pps: Math.max(0, ...pts.map((p) => Number(p.pps) || 0)),
@@ -314,7 +349,7 @@ onBeforeUnmount(() => {
     chart = null;
   }
 });
-watch(() => [props.points, props.theme, props.mode, zoom.value, axisConfig.value], render);
+watch(() => [props.points, props.theme, props.mode, zoom.value, axisConfig.value, smoothLevel.value], render);
 </script>
 
 <style scoped>
