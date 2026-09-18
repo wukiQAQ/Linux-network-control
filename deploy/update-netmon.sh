@@ -304,6 +304,8 @@ if [ "$DO_START" = "1" ] && [ "$DRY_RUN" != "1" ]; then
   else
     warn "服务已启动但未获取到版本信息 —— 下面自动收集诊断信息："
     if have systemctl; then
+      log "${c_dim}--- systemctl cat ${SERVICE}（完整单元，重点看 ProtectHome / User / ExecStart）---${c_off}"
+      systemctl cat "${SERVICE}" --no-pager 2>&1 | head -n 25 || true
       log "${c_dim}--- systemctl status ${SERVICE} ---${c_off}"
       systemctl status "${SERVICE}" --no-pager -l 2>&1 | head -n 10 || true
       if have journalctl; then
@@ -322,6 +324,8 @@ if [ "$DO_START" = "1" ] && [ "$DRY_RUN" != "1" ]; then
     warn "         sudo sed -i 's#^ExecStart=.*#ExecStart=/usr/local/bin/${BIN_NAME} -config ${CONFIG}#' /etc/systemd/system/${SERVICE}.service"
     warn "         sudo systemctl daemon-reload && sudo systemctl restart ${SERVICE}"
     warn "另外：live 抓包需要 root 或 CAP_NET_RAW（unit 里应保留 AmbientCapabilities=CAP_NET_RAW）"
+    warn "若日志出现 config.toml permission denied：把配置与数据移到 /etc/netmon 与 /var/lib/netmon，"
+    warn "并在单元里设置 ProtectHome=no（systemd 默认会屏蔽 /home）"
     warn "查看日志：tail -n 30 ${INSTALL_DIR%/}/netmon.log"
   fi
   log "${c_dim}回滚命令：${0} --rollback${c_off}"
