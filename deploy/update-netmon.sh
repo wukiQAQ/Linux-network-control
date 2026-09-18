@@ -94,6 +94,47 @@ wait_port_free() {
   return 1
 }
 
+# 只结束"监听指定端口的 netmon"进程；绝不使用 pkill -f（它会匹配到本脚本/ssh 自身的命令行）
+kill_port_owner() {
+  local pids pid exe target_real
+  target_real="$(readlink -f "$TARGET" 2>/dev/null || echo "$TARGET")"
+  pids=""
+  if have ss; then
+    pids="$(ss -ltnp 2>/dev/null | awk -v p=":${PORT}" 'index($4, p) > 0' | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u || true)"
+  fi
+  if [ -z "$pids" ] && have fuser; then
+    pids="$(fuser -n tcp "${PORT}" 2>/dev/null | tr -s ' ' '
+' | grep -E '^[0-9]+$' || true)"
+  fi
+  if [ -z "$pids" ]; then
+    warn "端口 ${PORT} 上没找到监听进程"
+    return 0
+  fi
+  for pid in $pids; do
+    [ "$pid" = "$$" ] && continue
+    exe=""
+    [ -r "/proc/$pid/exe" ] && exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+    if [ "$exe" = "$target_real" ] || [ "$(basename "${exe:-}")" = "$BIN_NAME" ]; then
+      log "  结束进程 pid=$pid (${exe:-未知})"
+      run "kill $pid 2>/dev/null || true"
+    else
+      warn "端口 ${PORT} 被其他程序占用（pid=$pid exe=${exe:-未知}），未做处理；请改用其他端口"
+      return 1
+    fi
+  done
+  return 0
+}
+
+# 兜底：按进程名精确匹配（-x 不会匹配到 bash/ssh/本脚本）
+kill_by_name() {
+  local pid
+  pgrep -x "$BIN_NAME" 2>/dev/null | while read -r pid; do
+    [ "$pid" = "$$" ] && continue
+    log "  结束进程 pid=$pid（按进程名匹配）"
+    run "kill $pid 2>/dev/null || true"
+  done
+}
+
 latest_backup() {
   ls -1t "${INSTALL_DIR%/}/${BIN_NAME}.bak."* 2>/dev/null | head -n 1 || true
 }
@@ -112,7 +153,12 @@ if [ "$DO_ROLLBACK" = "1" ]; then
   BACKUP="$(latest_backup)"
   [ -z "$BACKUP" ] && die "没有找到备份文件（${INSTALL_DIR%/}/${BIN_NAME}.bak.*）"
   step "回滚到备份：${BACKUP}"
-  if use_systemd; then run "sudo systemctl stop '${SERVICE}'"; else run "pkill -f '${TARGET}' || true"; fi
+  if use_systemd && sudo -n true 2>/dev/null; then
+    run "sudo systemctl stop '${SERVICE}'"
+  else
+    kill_port_owner || true
+    kill_by_name
+  fi
   sleep 1
   run "cp -a '${BACKUP}' '${TARGET}'"
   run "chmod 0755 '${TARGET}'"
@@ -140,14 +186,16 @@ log "  $(ls -lh "$BINARY" | awk '{print "新二进制大小："$5}')"
 
 # 2) 停旧进程
 step "停止旧进程"
-if use_systemd; then
+if use_systemd && sudo -n true 2>/dev/null; then
+  # 有 systemd 单元且 sudo 免密：交给 systemd 管理最干净
   run "sudo systemctl stop '${SERVICE}'"
 else
-  if pgrep -f "${TARGET}" >/dev/null 2>&1; then
-    run "pkill -f '${TARGET}' || true"
-  else
-    warn "没有发现正在运行的 ${BIN_NAME}（可能已停止或由其他方式启动）"
+  if use_systemd; then
+    warn "sudo 需要密码（非交互 ssh 无法输入）：改为直接结束监听 ${PORT} 端口的进程"
+    warn "想用 systemd 管理，请用 ssh -t 连接后再执行本脚本，或配置 sudo 免密"
   fi
+  kill_port_owner || true
+  kill_by_name
 fi
 sleep 1
 if [ "$DRY_RUN" != "1" ]; then

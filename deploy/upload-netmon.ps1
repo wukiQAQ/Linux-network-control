@@ -28,15 +28,17 @@ if (-not (Test-Path -LiteralPath $script)) { throw "找不到脚本：$script" }
 
 # Windows 检出可能把 .sh 变成 CRLF，会导致 Linux 报 "bad interpreter"：
 # 这里先转成 LF 的临时副本再上传。
-$lfScript = Join-Path $env:TEMP "update-netmon-lf.sh"
+$tmpDir = Join-Path $env:TEMP "metd-deploy"
+New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+$lfScript = Join-Path $tmpDir "update-netmon.sh"
 $text = [System.IO.File]::ReadAllText($script).Replace("`r`n", "`n").Replace("`r", "`n")
 [System.IO.File]::WriteAllText($lfScript, $text, (New-Object System.Text.UTF8Encoding($false)))
 
 $target = "$User@$Server"
+# 一次 scp 传两个文件（文件名已正确），一次 ssh 执行；ssh 用 -t 以便 sudo 能输入密码
 $cmds = @(
-  "scp `"$Binary`" ${target}:$RemoteDir/netmon-linux",
-  "scp `"$lfScript`" ${target}:$RemoteDir/update-netmon.sh",
-  "ssh $target `"chmod +x $RemoteDir/update-netmon.sh; $RemoteDir/update-netmon.sh -b $RemoteDir/netmon-linux -c $Config -s $Service -p $Port`""
+  "scp `"$Binary`" `"$lfScript`" ${target}:$RemoteDir/",
+  "ssh -t $target `"chmod +x $RemoteDir/update-netmon.sh && $RemoteDir/update-netmon.sh -b $RemoteDir/netmon-linux -c $Config -s $Service -p $Port`""
 )
 
 Write-Host "目标服务器：$target" -ForegroundColor Cyan
