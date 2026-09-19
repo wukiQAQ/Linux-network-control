@@ -12,14 +12,14 @@
 
 ## 项目状态
 
-- **当前阶段**：V0.14.0（TOP N / 协议分布 + IPv6 + 多机 + 实时推送）
+- **当前阶段**：V0.17.0（采集多队列 + 安全自升级 + 客户端一键升级入口）
 - **技术方向**：Go 语言采集端（AF_PACKET / libpcap）+ Rust/Tauri + Vue 3 桌面客户端（MeTD）
 - **架构分层**：采集 → 解析 → 聚合 → 存储 → API → 展示（网页 / 桌面客户端）→ 告警
 - **存储**：SQLite（默认，纯 Go 驱动 modernc.org/sqlite），可切换 JSONL（file）
 - **数据源**：synthetic 合成 / pcap 回放 / Linux AF_PACKET 真实抓包
 - **远程访问**：Linux 端可选 Bearer Token 鉴权；Windows 客户端跨 IP 连接
 - **版本号规则**：小更新只加最后一位（`0.14.0` → `0.14.1`），成体系的一批功能才升次版本，详见《版本记录》
-- **当前版本**：采集端 0.14.0、客户端 0.12.1
+- **当前版本**：采集端 0.17.0、客户端 0.12.4
 
 ## 如何使用（快速上手）
 
@@ -63,7 +63,7 @@ client/                  # Windows 桌面客户端 MeTD（Tauri 2 + Vue 3 + ECha
   src-tauri/             #   Rust 侧：reqwest 远程访问、令牌持有、命令层
   src/profiles.js        #   账号管理纯逻辑：连过的 IP 自动记入、按地址去重、最近连接时间
   src/chartzoom.js       #   历史曲线缩放区间计算（放大 / 缩小 / 重置）
-  test/                  #   前端单元测试（node --test，41 个用例）
+  test/                  #   前端单元测试（node --test，106 个用例）
 deploy/                  # 部署脚本：Linux 一键更新/回滚 + Windows 一键上传
 docs/                    # 产品设计 / 技术方案 / 系统设计 / 源码讲解 / 版本记录
 demo/index.html          # 纯前端界面演示（模拟数据，评估交互用）
@@ -79,6 +79,8 @@ demo/index.html          # 纯前端界面演示（模拟数据，评估交互�
 - 存储：SQLite（WAL、保留策略清理）；pcap 回放全功能可离线测试
 - 网页仪表盘：带宽/包速率曲线支持折线 / 面积 / 柱状切换，以及放大 / 缩小 / 重置与鼠标滚轮缩放
 - Linux 真实抓包入口（`source = "live"`，需 root / CAP_NET_RAW）
+- 多队列抓包：`[capture] readers = 1~8`（多套接字 + `PACKET_FANOUT` 按流哈希分流，失败自动回退单队列）
+- 安全版自升级：白名单 URL + SHA256 + ELF 校验 + 原子替换 + 备份回滚（默认关闭）
 - 可选 Bearer Token 鉴权：`[api] token = "..."` 后，`/api/` 请求需携带 `Authorization: Bearer <token>`
 
 ### Windows 桌面客户端 MeTD（client/）
@@ -120,8 +122,13 @@ demo/index.html          # 纯前端界面演示（模拟数据，评估交互�
 | V0.14.1 ✅ | TCP 状态机：连接建立/关闭计数（已实现） |
 | V0.14.2 ✅ | 存储基础优化：指标批量写入、WAL/NORMAL、会话查询索引（已实现） |
 | V0.15.0 ✅ | 采集层优化：读缓冲复用、QDISC_BYPASS、内核真实丢包统计（已实现） |
+| V0.15.1 ✅ | 代码整理：字节进制修正（1000→1024）+ 文件存储原子重写（已实现） |
 | V0.16.0 ✅ | 安全版自升级：白名单 + SHA256 + 原子替换 + 备份回滚（已实现） |
-| V2 | 告警引擎、TOP N、协议分布、IPv6、多队列抓包、WebSocket、鉴权细化、界面插件框架 |
+| V0.17.0 ✅ | 采集端多队列并行收包（PACKET_FANOUT）+ 关闭/取消响应修复（已实现） |
+| V0.12.2 ✅ | 客户端修正"未启用运维动作"误报 + 连接排查建议（已实现） |
+| V0.12.3 ✅ | 客户端代码整理（字节进制、文件存储原子重写）（已实现） |
+| V0.12.4 ✅ | 客户端：服务端一键升级入口（SHA256 校验 + 二次确认）（已实现） |
+| V2 | 告警引擎、TOP N、协议分布、IPv6、WebSocket、鉴权细化、界面插件框架（多队列已在 V0.17.0 完成） |
 | V3 | 客户端增强：WebSocket 实时推送、多机对比、Windows 通知、帮助中心型 AI |
 | V4 | 流量控制：Linux 端 tc 限速（仅本机流量，默认关闭 + 二次确认）+ 控制 API/界面 |
 | V5 | LLM 助手（RAG）、Agent+Server 分布式、NetFlow/sFlow、DPI、eBPF/XDP |
@@ -162,7 +169,7 @@ npx tauri build            # 产物：client/src-tauri/target/release/metd.exe�
 # Go 端（Linux Agent）
 go vet ./... && go test ./...
 
-# 前端单元测试（格式化 / 状态 / 设置 / 标签页 / 账号管理 / 图表缩放 / 模板处理器，共 41 个用例）
+# 前端单元测试（格式化 / 状态 / 设置 / 标签页 / 账号管理 / 图表缩放 / 模板处理器 / 能力判断 / 升级校验，共 106 个用例）
 cd client && npm test
 ```
 
