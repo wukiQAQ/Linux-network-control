@@ -1,0 +1,44 @@
+# MeTD netmon 采集端示例配置（复制为 config.toml 后按需修改）
+# 说明：解析器只支持 [section] + key = value 的 TOML 子集，未知字段会被忽略。
+
+[core]
+machine_id  = "host-1"        # 机器标识，多机对比时用于区分数据来源
+source      = "live"          # 数据源：live（Linux 抓包）| synthetic（造包演示）| replay（回放 pcap）
+tick_ms     = 1000            # 指标聚合周期（毫秒）
+
+[capture]
+iface       = "eth0"          # 监控网卡（live 模式）
+readers     = 1               # 并行收包队列数，范围 1~8；>1 时启用多套接字 + PACKET_FANOUT
+pps         = 200             # synthetic 数据源每秒产生包数
+replay_file = ""              # source=replay 时必填，例如 /path/to/sample.pcap
+filter      = ""              # BPF 过滤表达式（预留，尚未实现）
+
+[storage]
+data_dir         = "data"             # 数据目录
+storage          = "sqlite"           # 存储后端：sqlite | file
+sqlite_path      = "data/netmon.db"   # sqlite 数据库路径
+retention_hours  = 24                 # 数据保留时长（小时）
+
+[api]
+listen      = ":8080"          # HTTP 监听地址
+token       = ""               # 可选 Bearer Token，留空表示不鉴权
+
+[alert]
+enabled            = false     # 是否启用告警引擎
+bps_threshold      = 0         # 带宽阈值（bit/s），0 表示不启用该规则
+bps_for_secs       = 30        # 持续超过阈值多少秒触发
+pps_threshold      = 0         # 包速率阈值（包/s）
+pps_for_secs       = 30
+conns_threshold    = 0         # 并发连接阈值
+conns_for_secs     = 30
+drops_threshold    = 0         # 每秒丢包阈值
+drops_for_secs     = 30
+webhook            = ""        # 触发通知 URL（可选）
+auto_capture       = false     # 告警触发时自动导出抓包
+auto_capture_seconds = 15      # 自动抓包时长（秒）
+
+[update]
+enabled           = false      # 是否允许客户端触发"一键升级"（默认关闭）
+allowed_prefixes  = ""         # 允许下载的 URL 前缀，逗号分隔；为空则一律拒绝
+max_mb            = 64         # 安装包大小上限（MB）
+service           = "netmon"   # 升级后自动重启的 systemd 单元名

@@ -155,7 +155,7 @@ func buildSource(cfg *config.Config) (capture.Source, error) {
 		if runtime.GOOS != "linux" {
 			return nil, errors.New("live 抓包仅支持 Linux（当前系统 " + runtime.GOOS + "，可改用 synthetic/replay）")
 		}
-		return capture.NewLive(cfg.Iface)
+		return capture.NewLiveWithReaders(cfg.Iface, cfg.Readers)
 	default:
 		return nil, errors.New("未知数据源: " + cfg.Source + "（可选 synthetic/replay/live）")
 	}

@@ -32,6 +32,23 @@ type Source interface {
 	Stats() Stats
 }
 
+// 多队列并行收包的并发度范围（1 = 单队列，保持默认行为）。
+const (
+	MinReaders = 1
+	MaxReaders = 8
+)
+
+// normalizeReaders 把配置里的并发度夹到 [1,8]，非法值回退 1。
+func normalizeReaders(n int) int {
+	if n < MinReaders {
+		return MinReaders
+	}
+	if n > MaxReaders {
+		return MaxReaders
+	}
+	return n
+}
+
 // statsPollEvery 控制"多久查询一次内核侧统计"（每 N 个包一次，避免每包一次系统调用）。
 const statsPollEvery = 128
 

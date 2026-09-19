@@ -44,6 +44,7 @@ type Config struct {
 	Filter     string        // BPF 过滤表达式（预留，MVP 尚未实现）
 	ReplayFile string        // pcap 回放文件路径
 	Pps        int           // synthetic 数据源每秒产生包数
+	Readers    int           // live 抓包并行队列数（1~8，默认 1）
 	Tick       time.Duration // 指标聚合周期
 	DataDir    string        // 数据存储目录
 	Storage    string        // 存储后端：sqlite | file
@@ -62,6 +63,7 @@ func Default() *Config {
 		Source:     "synthetic",
 		Iface:      "eth0",
 		Pps:        200,
+		Readers:    1,
 		Tick:       time.Second,
 		DataDir:    "data",
 		Storage:    "sqlite",
@@ -141,6 +143,11 @@ func (c *Config) apply(v map[string]string) {
 	}
 	if s, ok := v["capture.replay_file"]; ok {
 		c.ReplayFile = s
+	}
+	if n, ok := v["capture.readers"]; ok {
+		if i, err := strconv.Atoi(n); err == nil && i > 0 {
+			c.Readers = i
+		}
 	}
 	if n, ok := v["capture.pps"]; ok {
 		if i, err := strconv.Atoi(n); err == nil && i > 0 {
