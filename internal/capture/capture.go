@@ -32,6 +32,12 @@ type Source interface {
 	Stats() Stats
 }
 
+// statsPollEvery 控制"多久查询一次内核侧统计"（每 N 个包一次，避免每包一次系统调用）。
+const statsPollEvery = 128
+
+// shouldPollStats 判断本次读包后是否需要刷新内核统计。
+func shouldPollStats(n uint64) bool { return n > 0 && n%statsPollEvery == 0 }
+
 // atomicStats 为数据源提供并发安全的计数。
 type atomicStats struct {
 	packets atomic.Uint64

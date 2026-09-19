@@ -98,8 +98,8 @@ func (p *PcapFile) Next(ctx context.Context) (*Packet, error) {
 	return &Packet{Ts: ts, Raw: raw, Iface: "replay"}, nil
 }
 
-func (p *PcapFile) Close() error      { return p.f.Close() }
-func (p *PcapFile) Stats() Stats      { return Stats{Packets: p.pkts, Drops: p.drops} }
+func (p *PcapFile) Close() error { return p.f.Close() }
+func (p *PcapFile) Stats() Stats { return Stats{Packets: p.pkts, Drops: p.drops} }
 
 // WritePCAP 将报文写入 pcap 文件（小端、微秒、以太网）。供测试与离线回放样本生成。
 func WritePCAP(path string, pkts []Packet) error {

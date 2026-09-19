@@ -73,3 +73,19 @@ func TestSyntheticProducesEthernetIPv4(t *testing.T) {
 		t.Error("Stats.Packets 未累计")
 	}
 }
+
+// TestShouldPollStats 验证内核统计的查询节流：每 128 个包一次。
+func TestShouldPollStats(t *testing.T) {
+	if shouldPollStats(0) {
+		t.Error("第 0 个包不应触发查询")
+	}
+	if shouldPollStats(1) {
+		t.Error("第 1 个包不应触发查询")
+	}
+	if !shouldPollStats(128) || !shouldPollStats(256) {
+		t.Error("每 128 个包应触发一次查询")
+	}
+	if statsPollEvery != 128 {
+		t.Errorf("节流步长应为 128，实际 %d", statsPollEvery)
+	}
+}

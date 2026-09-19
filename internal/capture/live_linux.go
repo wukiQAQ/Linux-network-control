@@ -11,9 +11,18 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
-const ethPAll = 0x0003 // ETH_P_ALL：接收所有协议
+const (
+	ethPAll = 0x0003 // ETH_P_ALL：接收所有协议
+
+	// PACKET_QDISC_BYPASS：跳过内核 qdisc 排队，减少一层延迟（Linux 3.14+）
+	packetQdiscBypass = 20
+	// PACKET_STATISTICS：读取内核侧的收包/丢包统计
+	packetStatistics = 6
+)
 
 // Live 是 Linux AF_PACKET 抓包实现。
 type Live struct {
@@ -22,6 +31,13 @@ type Live struct {
 	once   sync.Once
 	closed atomic.Bool
 	stats  atomicStats
+
+	// 读缓冲复用：避免每包分配 64KB
+	bufs sync.Pool
+	// seen 为本进程已读包数，用于节流查询内核统计
+	seen atomic.Uint64
+	// kernelDrops 为内核上报的丢包数（比"仅在出错时计数"更真实）
+	kernelDrops atomic.Uint64
 }
 
 // NewLive 打开指定网卡的原始套接字。
@@ -43,13 +59,34 @@ func NewLive(iface string) (*Live, error) {
 		return nil, err
 	}
 	// 增大内核接收缓冲，降低高流量下丢包概率
-	_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_RCVBUF, 4<<20)
-	return &Live{fd: fd, iface: iface}, nil
+	_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_RCVBUF, 8<<20)
+	// 跳过 qdisc 排队：减少内核侧延迟与排队丢包
+	_ = unix.SetsockoptInt(fd, unix.SOL_PACKET, packetQdiscBypass, 1)
+
+	l := &Live{fd: fd, iface: iface}
+	l.bufs.New = func() any {
+		b := make([]byte, 65536)
+		return &b
+	}
+	return l, nil
 }
 
-// Next 阻塞读取一个原始帧。
+// refreshKernelStats 读取内核侧统计（PACKET_STATISTICS），更新真实丢包数。
+func (l *Live) refreshKernelStats() {
+	st, err := unix.GetsockoptTpacketStats(l.fd, unix.SOL_PACKET, packetStatistics)
+	if err != nil || st == nil {
+		return
+	}
+	if st.Drops > 0 {
+		l.kernelDrops.Store(uint64(st.Drops))
+	}
+}
+
+// Next 阻塞读取一个原始帧（复用读缓冲，减少每包分配）。
 func (l *Live) Next(_ context.Context) (*Packet, error) {
-	buf := make([]byte, 65536)
+	bp := l.bufs.Get().(*[]byte)
+	buf := *bp
+	defer l.bufs.Put(bp)
 	for {
 		n, _, err := syscall.Recvfrom(l.fd, buf, 0)
 		if err != nil {
@@ -63,6 +100,10 @@ func (l *Live) Next(_ context.Context) (*Packet, error) {
 			continue
 		}
 		l.stats.addPacket()
+		// 每 128 个包刷新一次内核统计（含真实丢包数）
+		if shouldPollStats(l.seen.Add(1)) {
+			l.refreshKernelStats()
+		}
 		raw := make([]byte, n)
 		copy(raw, buf[:n])
 		return &Packet{Ts: time.Now().UTC(), Raw: raw, Iface: l.iface}, nil
@@ -79,7 +120,11 @@ func (l *Live) Close() error {
 	return err
 }
 
-func (l *Live) Stats() Stats { return l.stats.snapshot() }
+// Stats 返回收包数与丢包数（丢包 = 读取出错次数 + 内核上报丢包）。
+func (l *Live) Stats() Stats {
+	s := l.stats.snapshot()
+	return Stats{Packets: s.Packets, Drops: s.Drops + l.kernelDrops.Load()}
+}
 
 // htons 将主机字节序转为网络字节序（x86 小端下即字节交换）。
 func htons(v uint16) uint16 { return v<<8 | v>>8 }
