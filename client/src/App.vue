@@ -240,6 +240,15 @@
           {{ kernelText }}
         </span>
       </div>
+      <div class="muted section-title">服务端升级</div>
+      <div class="row">
+        <button class="btn small" type="button" :disabled="!connected || !upgradeEnabled" @click="openUpgrade">
+          一键升级服务端…
+        </button>
+        <span class="muted small">
+          {{ upgradeHint }}
+        </span>
+      </div>
       <div class="logbox">
         <div v-if="!uiLog.length" class="muted empty">暂无记录</div>
         <div v-for="(line, i) in uiLog" :key="i" class="log-line">{{ line }}</div>
@@ -314,6 +323,45 @@
         </p>
       </div>
     </main>
+
+    <!-- 服务端升级弹窗：必须填 SHA256，二次确认后由服务端原子替换 -->
+    <div v-if="upgradeDialog.open" class="overlay" @click.self="upgradeDialog.open = false">
+      <div class="dialog card action-dialog">
+        <div class="dialog-head">
+          <span>升级服务端 <span class="danger-tag">需二次确认</span></span>
+          <button class="profile-del" type="button" @click="upgradeDialog.open = false">×</button>
+        </div>
+        <p class="muted small">
+          服务端会校验白名单地址 → 下载 → <b>SHA256 校验</b> → ELF 校验 → 备份现有程序 → 原子替换，然后重启。
+          校验不通过不会改动任何文件。SHA256 请从可信渠道获取（如构建机执行 <code>sha256sum netmon-linux</code>）。
+        </p>
+        <p v-if="upgradeLastText" class="muted small">{{ upgradeLastText }}</p>
+        <div class="field">
+          <label>新版本下载地址（必须在服务端 allowed_prefixes 白名单内）</label>
+          <input v-model="upgradeDialog.url" placeholder="https://your-server/dl/netmon-linux" />
+        </div>
+        <div class="field">
+          <label>SHA256（64 位十六进制）</label>
+          <input v-model="upgradeDialog.sha" placeholder="例如 3f2a...（共 64 位）" />
+        </div>
+        <div class="switch-row">
+          <span>替换后自动重启服务</span>
+          <button class="switch" :class="{ on: upgradeDialog.restart }" type="button" @click="upgradeDialog.restart = !upgradeDialog.restart"></button>
+        </div>
+        <div v-if="upgradeDialog.error" class="banner banner-err">{{ upgradeDialog.error }}</div>
+        <div v-if="upgradeDialog.running" class="banner banner-busy">正在升级（下载 + 校验 + 替换）…</div>
+        <template v-if="upgradeDialog.result">
+          <div class="muted section-title">升级结果</div>
+          <pre class="out-box">{{ upgradeResultView }}</pre>
+        </template>
+        <div class="row">
+          <button class="btn primary grow" type="button" :disabled="upgradeDialog.running" @click="runUpgrade">
+            {{ upgradeDialog.running ? "升级中…" : "确认升级" }}
+          </button>
+          <button class="btn" type="button" @click="upgradeDialog.open = false">关闭</button>
+        </div>
+      </div>
+    </div>
 
     <!-- 运维动作弹窗：执行前先展示将在 Linux 上执行的命令 -->
     <div v-if="actionDialog.open" class="overlay" @click.self="closeActionDialog">
@@ -452,6 +500,7 @@ import { loadSettings, saveSettings } from "./settings.js";
 import { connectMessage, statusView } from "./status.js";
 import { chartModeLabel, normalizeChartMode } from "./chartmode.js";
 import { captureSupport, hasFeature } from "./capability.js";
+import { lastUpgradeSummary, serverUpgradeEnabled, upgradeDisabledHint, upgradeResultText, validateUpgradeInput } from "./upgrade.js";
 import {
   ACTION_NAV_KEYS,
   actionResultSummary,
@@ -527,6 +576,65 @@ const sessFilter = reactive({ ip: "", proto: "" });
 const firingAlerts = ref([]);
 // 实时通道是否已建立
 const streamStarted = ref(false);
+// ---------- 服务端升级（对接 /api/v1/system/upgrade） ----------
+const upgradeStatus = ref(null);
+const upgradeDialog = reactive({ open: false, url: "", sha: "", restart: true, running: false, error: "", result: null });
+const upgradeEnabled = computed(() => serverUpgradeEnabled(upgradeStatus.value));
+const upgradeHint = computed(() => upgradeDisabledHint(connected.value, upgradeStatus.value, now.version));
+const upgradeLastText = computed(() => lastUpgradeSummary(upgradeStatus.value));
+const upgradeResultView = computed(() => upgradeResultText(upgradeDialog.result));
+
+async function loadUpgradeStatus() {
+  if (!connected.value) {
+    upgradeStatus.value = null;
+    return;
+  }
+  try {
+    upgradeStatus.value = await apiGet("/api/v1/system/upgrade");
+  } catch {
+    upgradeStatus.value = null;
+  }
+}
+
+function openUpgrade() {
+  upgradeDialog.open = true;
+  upgradeDialog.error = "";
+  upgradeDialog.result = null;
+  loadUpgradeStatus();
+}
+
+async function runUpgrade() {
+  const check = validateUpgradeInput(upgradeDialog.url, upgradeDialog.sha);
+  if (!check.ok) {
+    upgradeDialog.error = check.error;
+    return;
+  }
+  const url = check.url;
+  const sha = check.sha256;
+  upgradeDialog.running = true;
+  upgradeDialog.error = "";
+  upgradeDialog.result = null;
+  pushLog("开始升级服务端：" + url);
+  try {
+    const res = await withTimeout(
+      apiPostJson("/api/v1/system/upgrade", { url: url, sha256: sha, confirm: true, restart: upgradeDialog.restart }),
+      180000,
+      "服务端升级",
+    );
+    upgradeDialog.result = res;
+    setBanner("ok", "服务端已升级：" + (res && res.sha256 ? res.sha256.slice(0, 12) + "…" : ""));
+    pushLog("服务端升级成功，SHA256=" + (res && res.sha256));
+    if (res && res.restart_scheduled) pushLog("服务端即将重启，等待自动重连…");
+  } catch (e) {
+    const reason = errText(e);
+    upgradeDialog.error = reason;
+    setBanner("err", "升级失败：" + reason);
+    pushLog("升级失败：" + reason);
+  } finally {
+    upgradeDialog.running = false;
+  }
+}
+
 // ---------- 流量排行（TOP N / 协议分布） ----------
 const topnRes = ref({});
 const topnSince = ref(3600);
@@ -1065,7 +1173,7 @@ async function connect() {
     }
     notify(connectMessage("ok", label));
     startTimers();
-    await Promise.all([refreshNow(), refreshHistory(), loadSessions(1), refreshAlerts(), loadActions(), loadActionHistory(), loadFiles(), loadTopN()]);
+    await Promise.all([refreshNow(), refreshHistory(), loadSessions(1), refreshAlerts(), loadActions(), loadActionHistory(), loadFiles(), loadTopN(), loadUpgradeStatus()]);
     setupStream();
   } catch (e) {
     if (!isCurrentAttempt(attempt, seq)) return; // 已取消，失败结果直接丢弃
