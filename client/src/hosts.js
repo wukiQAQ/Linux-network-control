@@ -1,4 +1,5 @@
 // 多机（fleet）视图的纯逻辑：状态判定、排序、汇总与徽标。
+import { fmtRate } from "./format.js";
 
 export function hostStatus(p) {
   if (!p || !p.ok) return { key: "offline", text: "离线", cls: "bad" };
@@ -47,7 +48,7 @@ export function hostMetrics(p) {
   const pps = Math.round(Number(n.pps) || 0);
   const conns = Math.round(Number(n.conns) || 0);
   const up = Number(n.uptime_s) || 0;
-  const rate = bps >= 1e6 ? (bps / 1e6).toFixed(1) + " Mb/s" : (bps / 1e3).toFixed(0) + " Kb/s";
+  const rate = fmtRate(bps);
   const h = Math.floor(up / 3600);
   const m = Math.floor((up % 3600) / 60);
   return rate + " · " + pps + " pps · " + conns + " 连接 · 运行 " + h + "h" + m + "m";

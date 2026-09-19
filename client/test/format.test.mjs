@@ -36,8 +36,8 @@ test("速率/字节/数字格式化", () => {
   assert.equal(fmtRate(1500000), "1.5 Mb/s");
   assert.equal(fmtRate(999), "999 b/s");
   assert.equal(fmtBytes(0), "0 B");
-  assert.equal(fmtBytes(2048), "2.05 KB");
-  assert.equal(fmtBytes(1048576), "1.05 MB");
+  assert.equal(fmtBytes(2048), "2 KB");
+  assert.equal(fmtBytes(1048576), "1 MB");
   assert.equal(fmtPps(1234), "1.23k pps");
   assert.equal(fmtNum(8500), "8.5k");
 });

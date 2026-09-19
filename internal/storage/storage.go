@@ -232,29 +232,63 @@ func (s *FileStore) Prune(now time.Time) error {
 	return s.rewrite()
 }
 
+// rewrite 把清理后的数据写回文件：先写临时文件再原子 rename，
+// 因此即使中途失败，原文件仍然完整可用（此前是直接截断重写，风险较高）。
 func (s *FileStore) rewrite() error {
-	s.mf.Close()
-	s.ff.Close()
+	if err := s.mf.Close(); err != nil {
+		return err
+	}
+	if err := s.ff.Close(); err != nil {
+		return err
+	}
+	if err := s.rewriteOne("metrics.jsonl", func(f *os.File) error {
+		for _, p := range s.metrics {
+			if err := writeLine(f, metricLine{Ts: p.Ts.UnixNano(), Series: p.Series, Tags: p.Tags, Value: p.Value}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := s.rewriteOne("flows.jsonl", func(f *os.File) error {
+		for _, rec := range s.flows {
+			if err := writeLine(f, flowLineFrom(rec)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
 	var err error
-	s.mf, err = os.Create(filepath.Join(s.dir, "metrics.jsonl"))
-	if err != nil {
+	if s.mf, err = os.OpenFile(filepath.Join(s.dir, "metrics.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err != nil {
 		return err
 	}
-	s.ff, err = os.Create(filepath.Join(s.dir, "flows.jsonl"))
-	if err != nil {
+	if s.ff, err = os.OpenFile(filepath.Join(s.dir, "flows.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err != nil {
 		return err
-	}
-	for _, p := range s.metrics {
-		if err := writeLine(s.mf, metricLine{Ts: p.Ts.UnixNano(), Series: p.Series, Tags: p.Tags, Value: p.Value}); err != nil {
-			return err
-		}
-	}
-	for _, f := range s.flows {
-		if err := writeLine(s.ff, flowLineFrom(f)); err != nil {
-			return err
-		}
 	}
 	return nil
+}
+
+// rewriteOne 写临时文件并原子替换目标文件。
+func (s *FileStore) rewriteOne(name string, fill func(*os.File) error) error {
+	target := filepath.Join(s.dir, name)
+	tmp := target + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	if err := fill(f); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, target)
 }
 
 func (s *FileStore) Close() error {

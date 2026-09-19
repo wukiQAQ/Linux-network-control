@@ -32,15 +32,15 @@ export function normalizeBaseUrl(raw) {
 }
 
 // 将数值缩放到合适单位，返回 { text, unit }。
-function scaleUnit(value, units, digits) {
+function scaleUnit(value, units, digits, base = 1000) {
   const n = Number(value);
   if (!Number.isFinite(n)) return { text: "-", unit: "" };
   if (n === 0) return { text: "0", unit: units[0] };
   const sign = n < 0 ? -1 : 1;
   let scaled = Math.abs(n);
   let i = 0;
-  while (scaled >= 1000 && i < units.length - 1) {
-    scaled /= 1000;
+  while (scaled >= base && i < units.length - 1) {
+    scaled /= base;
     i++;
   }
   const val = sign * scaled;
@@ -51,8 +51,8 @@ function scaleUnit(value, units, digits) {
   return { text, unit: units[i] };
 }
 
-function formatWithUnits(value, units, digits = 2) {
-  const { text, unit } = scaleUnit(value, units, digits);
+function formatWithUnits(value, units, digits = 2, base = 1000) {
+  const { text, unit } = scaleUnit(value, units, digits, base);
   return unit ? `${text} ${unit}` : text;
 }
 
@@ -60,8 +60,9 @@ export function fmtRate(bps) {
   return formatWithUnits(bps, BIT_UNITS);
 }
 
+// 字节按 1024 进制（1 MB = 1024 KB）；网络速率按 1000 进制，符合两者各自的习惯。
 export function fmtBytes(bytes) {
-  return formatWithUnits(bytes, BYTE_UNITS);
+  return formatWithUnits(bytes, BYTE_UNITS, 2, 1024);
 }
 
 export function fmtPps(pps) {

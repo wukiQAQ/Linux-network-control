@@ -11,13 +11,13 @@ test("barWidth 夹取范围", () => {
 
 test("shortBytes 单位换算", () => {
   assert.equal(shortBytes(512), "512 B");
-  assert.equal(shortBytes(2048), "2.0 KB");
-  assert.equal(shortBytes(5 * 1024 * 1024), "5.0 MB");
+  assert.equal(shortBytes(2048), "2 KB");
+  assert.equal(shortBytes(5 * 1024 * 1024), "5 MB");
 });
 
 test("entrySummary 组合摘要", () => {
   const s = entrySummary({ bytes: 1500, flows: 3, percent: 44.12 });
-  assert.ok(s.includes("1.5 KB"));
+  assert.ok(s.includes("1.46 KB"));
   assert.ok(s.includes("3 会话"));
   assert.ok(s.includes("44.1%"));
 });

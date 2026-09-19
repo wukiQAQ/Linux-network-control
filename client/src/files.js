@@ -1,4 +1,5 @@
 // 文件通道（Linux → Windows）的纯逻辑：路径处理、排序与大小格式化。
+import { fmtBytes } from "./format.js";
 
 export function parentPath(p) {
   const s = String(p || "").replace(/\/+$/, "");
@@ -25,18 +26,11 @@ export function sortEntries(list) {
   });
 }
 
+// 字节格式化统一走 format.js，避免同一套逻辑在多个模块各写一份。
 export function fileSizeText(bytes) {
   const n = Number(bytes);
   if (!Number.isFinite(n) || n < 0) return "-";
-  if (n < 1024) return n + " B";
-  const units = ["KB", "MB", "GB", "TB"];
-  let v = n / 1024;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i += 1;
-  }
-  return (v >= 100 ? v.toFixed(0) : v.toFixed(1)) + " " + units[i];
+  return fmtBytes(n);
 }
 
 export function entryIcon(e) {

@@ -20,8 +20,8 @@ test("sortEntries 目录优先", () => {
 
 test("fileSizeText 单位换算", () => {
   assert.equal(fileSizeText(512), "512 B");
-  assert.equal(fileSizeText(2048), "2.0 KB");
-  assert.equal(fileSizeText(5 * 1024 * 1024), "5.0 MB");
+  assert.equal(fileSizeText(2048), "2 KB");
+  assert.equal(fileSizeText(5 * 1024 * 1024), "5 MB");
   assert.equal(fileSizeText(-1), "-");
   assert.equal(fileSizeText("x"), "-");
 });

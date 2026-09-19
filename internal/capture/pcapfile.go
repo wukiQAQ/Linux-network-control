@@ -101,37 +101,18 @@ func (p *PcapFile) Next(ctx context.Context) (*Packet, error) {
 func (p *PcapFile) Close() error { return p.f.Close() }
 func (p *PcapFile) Stats() Stats { return Stats{Packets: p.pkts, Drops: p.drops} }
 
-// WritePCAP 将报文写入 pcap 文件（小端、微秒、以太网）。供测试与离线回放样本生成。
+// WritePCAP 将报文写入 pcap 文件（小端、微秒、以太网）。
+// 复用 PcapWriter（dumper.go），避免格式代码在两处各写一遍。
 func WritePCAP(path string, pkts []Packet) error {
-	f, err := os.Create(path)
+	w, err := NewPcapWriter(path)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	w := bufio.NewWriter(f)
-	hdr := make([]byte, 24)
-	binary.LittleEndian.PutUint32(hdr[0:4], magicMicroLE)
-	binary.LittleEndian.PutUint16(hdr[4:6], 2) // 版本 2.4
-	binary.LittleEndian.PutUint16(hdr[6:8], 4)
-	binary.LittleEndian.PutUint32(hdr[16:20], 65535) // snaplen
-	binary.LittleEndian.PutUint32(hdr[20:24], linkEthernet)
-	if _, err := w.Write(hdr); err != nil {
-		return err
-	}
-	for _, p := range pkts {
-		rh := make([]byte, 16)
-		sec := uint32(p.Ts.Unix())
-		frac := uint32(p.Ts.Nanosecond() / 1000)
-		binary.LittleEndian.PutUint32(rh[0:4], sec)
-		binary.LittleEndian.PutUint32(rh[4:8], frac)
-		binary.LittleEndian.PutUint32(rh[8:12], uint32(len(p.Raw)))
-		binary.LittleEndian.PutUint32(rh[12:16], uint32(len(p.Raw)))
-		if _, err := w.Write(rh); err != nil {
-			return err
-		}
-		if _, err := w.Write(p.Raw); err != nil {
+	for i := range pkts {
+		if err := w.Write(&pkts[i]); err != nil {
+			_ = w.Close()
 			return err
 		}
 	}
-	return w.Flush()
+	return w.Close()
 }

@@ -1,4 +1,5 @@
 // TOP N / 协议分布视图的纯逻辑。
+import { fmtBytes } from "./format.js";
 
 export const TOPN_RANGES = [
   { value: 600, label: "近 10 分钟" },
@@ -12,18 +13,11 @@ export function barWidth(percent) {
   return Math.min(100, Math.max(2, p)).toFixed(1) + "%";
 }
 
-// 字节数的简短格式化
+// 字节格式化统一走 format.js
 export function shortBytes(bytes) {
-  const n = Number(bytes) || 0;
-  if (n < 1024) return n + " B";
-  const units = ["KB", "MB", "GB", "TB"];
-  let v = n / 1024;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i += 1;
-  }
-  return (v >= 100 ? v.toFixed(0) : v.toFixed(1)) + " " + units[i];
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n < 0) return "-";
+  return fmtBytes(n);
 }
 
 // 一行摘要：字节 · 会话数 · 占比

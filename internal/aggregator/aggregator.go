@@ -91,10 +91,6 @@ func (a *Agg) Tick(now time.Time, active int, created uint64, closed uint64) Sam
 	if closed > a.lastClosed {
 		s.Closed = int(closed - a.lastClosed)
 	}
-	s.Active = active
-	if created > a.lastSec {
-		s.NewConns = int(created - a.lastSec)
-	}
 	a.bytes, a.pkts = 0, 0
 	a.lastSec = created
 	a.lastClosed = closed

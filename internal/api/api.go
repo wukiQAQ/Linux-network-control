@@ -412,6 +412,8 @@ func (s *Server) handleActionHistory(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"total": len(items), "items": items})
 }
 
+// protoName 把协议号转成小写名称（客户端用它作为 CSS 类名 .proto.tcp），
+// 因此不能与 topn.ProtoName（大写展示名）合并。
 func protoName(p uint8) string {
 	switch p {
 	case 6:
