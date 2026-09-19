@@ -24,6 +24,7 @@ import (
 	"github.com/wukiQAQ/Linux-network-control/internal/config"
 	"github.com/wukiQAQ/Linux-network-control/internal/flow"
 	"github.com/wukiQAQ/Linux-network-control/internal/storage"
+	"github.com/wukiQAQ/Linux-network-control/internal/updater"
 	"github.com/wukiQAQ/Linux-network-control/internal/webui"
 )
 
@@ -71,6 +72,18 @@ func main() {
 	srv.SetDumper(dumper)
 	// 白名单运维动作：命令预览 + 参数校验 + 审计
 	srv.SetActions(action.NewExecutor())
+	// 安全版自升级（默认关闭；开启后仅允许白名单地址 + SHA256 校验通过的新版本）
+	up := updater.New(updater.Config{
+		Enabled:         cfg.Update.Enabled,
+		AllowedPrefixes: cfg.Update.AllowedPrefixes,
+		MaxBytes:        int64(cfg.Update.MaxMB) << 20,
+		Service:         cfg.Update.Service,
+	})
+	srv.SetUpdater(up)
+	if cfg.Update.Enabled {
+		log.Printf("[update] 自升级已启用（白名单 %d 个前缀，上限 %d MB，服务 %s）",
+			len(cfg.Update.AllowedPrefixes), cfg.Update.MaxMB, cfg.Update.Service)
+	}
 	handler := srv.Handler()
 	httpSrv := &http.Server{Addr: cfg.Listen, Handler: handler}
 

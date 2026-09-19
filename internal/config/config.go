@@ -28,6 +28,14 @@ type AlertConfig struct {
 	AutoCaptureSeconds int    // 自动抓包时长（秒）
 }
 
+// UpdateConfig 汇总自升级配置（默认关闭，需显式开启）。
+type UpdateConfig struct {
+	Enabled         bool
+	AllowedPrefixes []string // 允许下载的 URL 前缀，为空则一律拒绝
+	MaxMB           int      // 单文件大小上限（MB）
+	Service         string   // 重启用的 systemd 单元名
+}
+
 // Config 汇总各模块需要的运行参数。
 type Config struct {
 	MachineID  string        // 机器标识，未来多机对比时的标签
@@ -44,6 +52,7 @@ type Config struct {
 	Listen     string        // HTTP 监听地址
 	APIToken   string        // 可选 API 访问令牌（Bearer Token），空表示不鉴权
 	Alert      AlertConfig   // 可选告警规则
+	Update     UpdateConfig  // 可选自升级配置
 }
 
 // Default 返回开箱即用的默认配置（synthetic 数据源，便于无网卡环境演示）。
@@ -65,6 +74,11 @@ func Default() *Config {
 			ConnsForSecs:       30,
 			DropsForSecs:       30,
 			AutoCaptureSeconds: 15,
+		},
+		Update: UpdateConfig{
+			Enabled: false,
+			MaxMB:   64,
+			Service: "netmon",
 		},
 	}
 }
@@ -210,6 +224,27 @@ func (c *Config) apply(v map[string]string) {
 		if b, err := strconv.ParseBool(s); err == nil {
 			c.Alert.AutoCapture = b
 		}
+	}
+	if s, ok := v["update.enabled"]; ok {
+		if b, err := strconv.ParseBool(s); err == nil {
+			c.Update.Enabled = b
+		}
+	}
+	if s, ok := v["update.allowed_prefixes"]; ok {
+		c.Update.AllowedPrefixes = nil
+		for _, part := range strings.Split(s, ",") {
+			if p := strings.TrimSpace(part); p != "" {
+				c.Update.AllowedPrefixes = append(c.Update.AllowedPrefixes, p)
+			}
+		}
+	}
+	if n2, ok := v["update.max_mb"]; ok {
+		if i, err := strconv.Atoi(n2); err == nil && i > 0 {
+			c.Update.MaxMB = i
+		}
+	}
+	if s, ok := v["update.service"]; ok {
+		c.Update.Service = s
 	}
 	if n, ok := v["alert.auto_capture_seconds"]; ok {
 		if i, err := strconv.Atoi(n); err == nil && i > 0 {

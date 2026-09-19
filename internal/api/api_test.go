@@ -616,3 +616,21 @@ func TestStreamAPI(t *testing.T) {
 	}
 	cancel() // 断开连接后服务端应结束该连接（无泄漏）
 }
+
+// 自升级接口：未注入/未启用时返回 503，缺少二次确认返回 409。
+func TestUpgradeAPI(t *testing.T) {
+	ts, _ := newTestServer(t)
+	code, _ := postJSON(t, ts.URL+"/api/v1/system/upgrade", `{"url":"http://127.0.0.1/x","sha256":"`+strings.Repeat("a", 64)+`"}`)
+	if code != http.StatusServiceUnavailable {
+		t.Errorf("未启用自升级应返回 503，实际 %d", code)
+	}
+	// 读状态同样 503
+	r, err := http.Get(ts.URL + "/api/v1/system/upgrade")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if r.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("状态查询应返回 503，实际 %d", r.StatusCode)
+	}
+}

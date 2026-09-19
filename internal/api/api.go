@@ -22,6 +22,7 @@ import (
 	"github.com/wukiQAQ/Linux-network-control/internal/config"
 	"github.com/wukiQAQ/Linux-network-control/internal/flow"
 	"github.com/wukiQAQ/Linux-network-control/internal/storage"
+	"github.com/wukiQAQ/Linux-network-control/internal/updater"
 )
 
 // Server 聚合各模块依赖，提供 HTTP 处理器。
@@ -32,6 +33,7 @@ type Server struct {
 	cfg     *config.Config
 	alerts  *alert.Engine    // 可选告警引擎，nil 表示未启用
 	dumper  *capture.Dumper  // 可选按需抓包器，nil 表示未启用导出接口
+	updater *updater.Updater // 可选自升级器，nil 表示未启用升级接口
 	actions *action.Executor // 可选运维动作执行器，nil 表示未启用
 	started time.Time
 	ui      fs.FS
@@ -49,6 +51,11 @@ func (s *Server) SetAlerts(e *alert.Engine) {
 // SetDumper 注入按需抓包器（nil 表示不启用 pcap 导出接口）。
 func (s *Server) SetDumper(d *capture.Dumper) {
 	s.dumper = d
+}
+
+// SetUpdater 注入自升级器（nil 表示不启用升级接口）。
+func (s *Server) SetUpdater(u *updater.Updater) {
+	s.updater = u
 }
 
 // SetActions 注入运维动作执行器（nil 表示不启用动作接口）。
@@ -75,6 +82,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/files/download", s.handleFileDownload)
 	mux.HandleFunc("GET /api/v1/stream", s.handleStream)
 	mux.HandleFunc("GET /api/v1/topn", s.handleTopN)
+	mux.HandleFunc("GET /api/v1/system/upgrade", s.handleUpgradeStatus)
+	mux.HandleFunc("POST /api/v1/system/upgrade", s.handleUpgrade)
 	mux.Handle("/", http.FileServerFS(s.ui))
 	h := http.Handler(logRequests(mux))
 	if s.cfg.APIToken != "" {
