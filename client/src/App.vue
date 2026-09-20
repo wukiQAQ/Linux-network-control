@@ -234,6 +234,28 @@
       </div>
     </aside>
 
+    <aside v-else-if="nav === 'plugins'" class="side card">
+      <div class="panel-title">界面插件</div>
+      <div class="muted hint">{{ pluginHintText }}</div>
+      <div class="row">
+        <button class="btn small" type="button" :disabled="pluginsLoading" @click="loadPlugins">刷新插件</button>
+      </div>
+      <div v-if="pluginWarnings.length" class="banner banner-err">
+        <div v-for="(w, i) in pluginWarnings" :key="i">{{ w }}</div>
+      </div>
+      <div v-if="!pluginItems.length" class="muted empty">当前没有可用插件</div>
+      <div v-for="p in pluginItems" :key="p.id" class="plugin-item">
+        <label class="plugin-line">
+          <input type="checkbox" :checked="p.enabled" @change="setPluginEnabled(p.id, $event.target.checked)" />
+          <span class="plugin-name">{{ p.icon }} {{ p.title }}</span>
+        </label>
+        <div class="muted small">{{ p.available ? "可用" : p.hint }}</div>
+        <div class="row">
+          <button class="btn small" type="button" :disabled="!p.available" @click="selectedPluginId = p.id">打开面板</button>
+        </div>
+      </div>
+    </aside>
+
     <aside v-else-if="nav === 'logs'" class="side card">
       <div class="panel-title">连接日志与状态</div>
       <div class="status-line">
@@ -315,6 +337,7 @@
         </div>
         <KpiCards :now="now" />
         <TrafficChart :points="history" :theme="theme" :mode="chartMode" @update-mode="setChartMode" />
+        <PluginPanel v-if="selectedPlugin" :spec="selectedPlugin" :features="serverFeatures" />
         <div class="card">
           <div class="sess-head">
             <span class="sess-title">会话明细</span>
@@ -482,6 +505,7 @@ import { listen } from "@tauri-apps/api/event";
 import KpiCards from "./components/KpiCards.vue";
 import TrafficChart from "./components/TrafficChart.vue";
 import SessionTable from "./components/SessionTable.vue";
+import PluginPanel from "./components/PluginPanel.vue";
 import {
   apiGet,
   apiPost,
@@ -523,6 +547,7 @@ import { connectMessage, statusView } from "./status.js";
 import { chartModeLabel, normalizeChartMode } from "./chartmode.js";
 import { captureSupport, hasFeature } from "./capability.js";
 import { filterSummary } from "./filterinfo.js";
+import { loadDisabled, pluginList, saveDisabled, togglePluginDisabled } from "./pluginregistry.js";
 import { lastUpgradeSummary, serverUpgradeEnabled, upgradeDisabledHint, upgradeResultText, validateUpgradeInput } from "./upgrade.js";
 import {
   COMMANDS_NAV,
@@ -570,6 +595,7 @@ const navItems = [
   { key: "hosts", icon: "🖥", label: "主机" },
   { key: "topn", icon: "📈", label: "排行" },
   { key: COMMANDS_NAV.key, icon: COMMANDS_NAV.icon, label: COMMANDS_NAV.label },
+  { key: "plugins", icon: "🧩", label: "插件" },
   { key: "logs", icon: "📋", label: "连接日志" },
 ];
 
@@ -769,6 +795,53 @@ const missingFeatures = computed(() => {
 const actionGroups = computed(() => groupActions(actions.value));
 const actionTotal = computed(() => countActions(actionGroups.value));
 const commandTotal = computed(() => countCommands(actionGroups.value));
+// ---------- 界面插件框架（服务端下发声明式清单，客户端渲染） ----------
+const plugins = ref([]);
+const pluginWarnings = ref([]);
+const pluginsLoading = ref(false);
+const pluginsEnabled = ref(false);
+const pluginServerHint = ref("");
+const pluginDisabled = ref(loadDisabled(localStorage));
+const selectedPluginId = ref("");
+const serverFeatures = computed(() => (Array.isArray(now.features) ? now.features : []));
+const pluginServerSupports = computed(() => hasFeature(now, "plugins"));
+const pluginItems = computed(() =>
+  pluginList(plugins.value, { features: serverFeatures.value, disabled: pluginDisabled.value }),
+);
+const selectedPlugin = computed(() => pluginItems.value.find((p) => p.id === selectedPluginId.value) || null);
+const pluginHintText = computed(() => {
+  if (!connected.value) return "连接服务器后加载插件清单";
+  if (!pluginServerSupports.value) return "服务端未上报 plugins 能力：把 Linux 端 netmon 升级到 V0.19.0 及以上";
+  if (pluginServerHint.value) return pluginServerHint.value;
+  if (!pluginsEnabled.value) return "服务端未配置 [plugins] dir（见使用指南「界面插件」）";
+  return pluginItems.value.length ? "插件由服务端下发；取消勾选可临时隐藏，勾选状态记在本机" : "服务端插件目录里还没有 *.json 清单";
+});
+
+async function loadPlugins() {
+  if (!connected.value) return;
+  pluginsLoading.value = true;
+  try {
+    const res = await apiGet("/api/v1/plugins");
+    plugins.value = Array.isArray(res.items) ? res.items : [];
+    pluginWarnings.value = Array.isArray(res.warnings) ? res.warnings : [];
+    pluginsEnabled.value = Boolean(res.enabled);
+    pluginServerHint.value = typeof res.hint === "string" ? res.hint : "";
+  } catch (e) {
+    plugins.value = [];
+    pluginWarnings.value = [];
+    pluginsEnabled.value = false;
+    pluginServerHint.value = "读取插件清单失败：" + errText(e);
+  } finally {
+    pluginsLoading.value = false;
+  }
+}
+
+function setPluginEnabled(id, enabled) {
+  pluginDisabled.value = togglePluginDisabled(pluginDisabled.value, id, enabled);
+  saveDisabled(localStorage, pluginDisabled.value);
+  if (!enabled && selectedPluginId.value === id) selectedPluginId.value = "";
+}
+
 // ---------- 文件通道（浏览 + 下载 Linux 文件） ----------
 const filePath = ref("/var/log");
 const fileEntries = ref([]);
@@ -1198,7 +1271,7 @@ async function connect() {
     }
     notify(connectMessage("ok", label));
     startTimers();
-    await Promise.all([refreshNow(), refreshHistory(), loadSessions(1), refreshAlerts(), loadActions(), loadActionHistory(), loadFiles(), loadTopN(), loadUpgradeStatus()]);
+    await Promise.all([refreshNow(), refreshHistory(), loadSessions(1), refreshAlerts(), loadActions(), loadActionHistory(), loadFiles(), loadTopN(), loadUpgradeStatus(), loadPlugins()]);
     setupStream();
   } catch (e) {
     if (!isCurrentAttempt(attempt, seq)) return; // 已取消，失败结果直接丢弃
@@ -1237,6 +1310,11 @@ async function disconnect() {
   stopTimers();
   connected.value = false;
   failCount = 0;
+  plugins.value = [];
+  pluginWarnings.value = [];
+  pluginsEnabled.value = false;
+  pluginServerHint.value = "";
+  selectedPluginId.value = "";
   setBanner("ok", "已断开连接");
   pushLog("已断开连接");
   try {
@@ -1888,4 +1966,24 @@ onBeforeUnmount(() => {
   margin: 4px 0 8px;
 }
 .out-box { max-height: 260px; }
+
+/* 界面插件：侧栏管理列表（主区面板样式在 components/PluginPanel.vue） */
+.plugin-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+}
+.plugin-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.plugin-name {
+  font-weight: 500;
+}
 </style>
