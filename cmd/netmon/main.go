@@ -24,6 +24,7 @@ import (
 	"github.com/wukiQAQ/Linux-network-control/internal/config"
 	"github.com/wukiQAQ/Linux-network-control/internal/filter"
 	"github.com/wukiQAQ/Linux-network-control/internal/flow"
+	"github.com/wukiQAQ/Linux-network-control/internal/plugin"
 	"github.com/wukiQAQ/Linux-network-control/internal/storage"
 	"github.com/wukiQAQ/Linux-network-control/internal/updater"
 	"github.com/wukiQAQ/Linux-network-control/internal/webui"
@@ -89,6 +90,18 @@ func main() {
 	if filtered != nil {
 		srv.SetFilter(flt.String(), filtered.Filtered)
 	}
+	// 界面插件框架：读取插件目录里的声明式清单（纯 JSON，不含可执行代码）
+	specs, pluginWarnings, err := plugin.Load(cfg.Plugins.Dir)
+	if err != nil {
+		log.Printf("[plugin] 插件目录读取失败（已跳过）: %v", err)
+	}
+	for _, w := range pluginWarnings {
+		log.Printf("[plugin] %s", w)
+	}
+	if len(specs) > 0 {
+		log.Printf("[plugin] 已加载 %d 个界面插件", len(specs))
+	}
+	srv.SetPlugins(specs, pluginWarnings, cfg.Plugins.Dir != "")
 	// 安全版自升级（默认关闭；开启后仅允许白名单地址 + SHA256 校验通过的新版本）
 	up := updater.New(updater.Config{
 		Enabled:         cfg.Update.Enabled,

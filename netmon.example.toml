@@ -42,6 +42,9 @@ webhook            = ""        # 触发通知 URL（可选）
 auto_capture       = false     # 告警触发时自动导出抓包
 auto_capture_seconds = 15      # 自动抓包时长（秒）
 
+[plugins]
+dir               = ""         # 界面插件目录（*.json 声明式清单），例如 "/home/wuki/netmon-plugins"；留空表示不加载
+
 [update]
 enabled           = false      # 是否允许客户端触发"一键升级"（默认关闭）
 allowed_prefixes  = ""         # 允许下载的 URL 前缀，逗号分隔；为空则一律拒绝

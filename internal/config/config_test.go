@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/wukiQAQ/Linux-network-control/internal/filter"
+	"github.com/wukiQAQ/Linux-network-control/internal/plugin"
 )
 
 func writeTemp(t *testing.T, content string) string {
@@ -144,5 +145,33 @@ filter = "tcp and (host 10.0.0.5 or net 192.168.0.0/16)"
 	}
 	if _, err := filter.Parse("vlan"); err == nil {
 		t.Error("非法表达式应报错")
+	}
+}
+
+// TestPluginConfigParsing 校验 [plugins] dir 解析，并串起"配置 → 插件加载"这条链路。
+func TestPluginConfigParsing(t *testing.T) {
+	dir := t.TempDir()
+	p := writeTemp(t, "[plugins]\ndir = \""+dir+"\"\n")
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Plugins.Dir != dir {
+		t.Fatalf("plugins.dir=%q, want %q", cfg.Plugins.Dir, dir)
+	}
+	if d := Default(); d.Plugins.Dir != "" {
+		t.Errorf("默认 plugins.dir=%q，期望空（不加载插件）", d.Plugins.Dir)
+	}
+	// 目录里放一个合法插件，走一遍真实加载
+	spec := `{"id":"cfg-demo","title":"配置示例","widgets":[{"type":"text","text":"ok"}]}`
+	if err := os.WriteFile(filepath.Join(dir, "demo.json"), []byte(spec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	specs, warnings, err := plugin.Load(cfg.Plugins.Dir)
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("Load 插件: %v / %v", err, warnings)
+	}
+	if len(specs) != 1 || specs[0].ID != "cfg-demo" {
+		t.Fatalf("应加载 1 个插件: %+v", specs)
 	}
 }

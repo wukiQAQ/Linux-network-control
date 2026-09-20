@@ -36,6 +36,11 @@ type UpdateConfig struct {
 	Service         string   // 重启用的 systemd 单元名
 }
 
+// PluginConfig 汇总界面插件框架配置（默认不加载任何插件）。
+type PluginConfig struct {
+	Dir string // 界面插件清单目录（*.json 声明式清单）；为空表示不启用
+}
+
 // Config 汇总各模块需要的运行参数。
 type Config struct {
 	MachineID  string        // 机器标识，未来多机对比时的标签
@@ -54,6 +59,7 @@ type Config struct {
 	APIToken   string        // 可选 API 访问令牌（Bearer Token），空表示不鉴权
 	Alert      AlertConfig   // 可选告警规则
 	Update     UpdateConfig  // 可选自升级配置
+	Plugins    PluginConfig  // 可选界面插件目录
 }
 
 // Default 返回开箱即用的默认配置（synthetic 数据源，便于无网卡环境演示）。
@@ -252,6 +258,9 @@ func (c *Config) apply(v map[string]string) {
 	}
 	if s, ok := v["update.service"]; ok {
 		c.Update.Service = s
+	}
+	if s, ok := v["plugins.dir"]; ok {
+		c.Plugins.Dir = s
 	}
 	if n, ok := v["alert.auto_capture_seconds"]; ok {
 		if i, err := strconv.Atoi(n); err == nil && i > 0 {

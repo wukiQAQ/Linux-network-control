@@ -22,6 +22,7 @@ import (
 	"github.com/wukiQAQ/Linux-network-control/internal/capture"
 	"github.com/wukiQAQ/Linux-network-control/internal/config"
 	"github.com/wukiQAQ/Linux-network-control/internal/flow"
+	"github.com/wukiQAQ/Linux-network-control/internal/plugin"
 	"github.com/wukiQAQ/Linux-network-control/internal/storage"
 	"github.com/wukiQAQ/Linux-network-control/internal/webui"
 )
@@ -674,5 +675,50 @@ func TestFilterAbsentWhenDisabled(t *testing.T) {
 	}
 	if _, ok := out["filter_dropped"]; ok {
 		t.Error("未启用过滤时不应出现 filter_dropped 字段")
+	}
+}
+
+// TestPluginsAPI 校验界面插件接口：未配置时返回空列表 + 可操作提示，配置后按 order 排序下发。
+func TestPluginsAPI(t *testing.T) {
+	cfg := config.Default()
+	store, err := storage.OpenFileStore(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	srv := New(cfg, aggregator.New(100), flow.NewTable(time.Minute, 5*time.Minute, nil), store, webui.FS)
+	srv.SetPlugins(nil, nil, false)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	type resp struct {
+		Enabled  bool          `json:"enabled"`
+		Total    int           `json:"total"`
+		Items    []plugin.Spec `json:"items"`
+		Warnings []string      `json:"warnings"`
+		Hint     string        `json:"hint"`
+	}
+	var out resp
+	getJSON(t, ts.URL+"/api/v1/plugins", &out)
+	if out.Enabled || out.Total != 0 || len(out.Items) != 0 {
+		t.Fatalf("未配置插件时应为空列表: %+v", out)
+	}
+	if out.Hint == "" {
+		t.Error("应给出「如何添加插件」的提示，避免用户以为是 bug")
+	}
+
+	late := plugin.Spec{ID: "late", Title: "后加载", Order: 20, Widgets: []plugin.Widget{{Type: "text", Text: "b"}}}
+	early := plugin.Spec{ID: "early", Title: "先加载", Order: 10, Widgets: []plugin.Widget{{Type: "text", Text: "a"}}}
+	srv.SetPlugins([]plugin.Spec{late, early}, []string{"bad.json：跳过"}, true)
+	var out2 resp
+	getJSON(t, ts.URL+"/api/v1/plugins", &out2)
+	if !out2.Enabled || out2.Total != 2 {
+		t.Fatalf("应返回 2 个插件: %+v", out2)
+	}
+	if out2.Items[0].ID != "early" || out2.Items[1].ID != "late" {
+		t.Errorf("应按 order 排序下发（接口层保证顺序稳定）: %+v", out2.Items)
+	}
+	if len(out2.Warnings) != 1 || out2.Warnings[0] != "bad.json：跳过" {
+		t.Errorf("加载警告应原样下发: %+v", out2.Warnings)
 	}
 }

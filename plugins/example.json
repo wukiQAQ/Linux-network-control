@@ -1,0 +1,50 @@
+{
+  "id": "traffic-overview",
+  "title": "流量速览",
+  "icon": "🧭",
+  "order": 100,
+  "refresh_s": 10,
+  "requires": ["topn", "sessions"],
+  "widgets": [
+    {
+      "type": "kpi",
+      "title": "实时指标",
+      "fields": [
+        { "key": "bps", "label": "带宽", "unit": "rate" },
+        { "key": "pps", "label": "包速率", "unit": "count" },
+        { "key": "conns", "label": "并发连接", "unit": "count" },
+        { "key": "drop_rate", "label": "丢包率", "unit": "percent" }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "TOP IP（近 1 小时）",
+      "endpoint": "/api/v1/topn",
+      "params": { "since": "3600", "n": "5" },
+      "root": "by_ip",
+      "columns": [
+        { "key": "key", "label": "IP" },
+        { "key": "bytes", "label": "流量", "unit": "bytes" },
+        { "key": "flows", "label": "会话数", "unit": "count" },
+        { "key": "percent", "label": "占比", "unit": "percent" }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "协议分布（近 1 小时）",
+      "endpoint": "/api/v1/topn",
+      "params": { "since": "3600", "n": "5" },
+      "root": "by_proto",
+      "columns": [
+        { "key": "key", "label": "协议" },
+        { "key": "bytes", "label": "流量", "unit": "bytes" },
+        { "key": "percent", "label": "占比", "unit": "percent" }
+      ]
+    },
+    {
+      "type": "text",
+      "title": "说明",
+      "text": "示例插件：只声明要拉取的监控接口与展示字段，不含任何可执行代码。复制本文件、改 id / title / endpoint 就能做出自己的面板。"
+    }
+  ]
+}

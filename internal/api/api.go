@@ -21,6 +21,7 @@ import (
 	"github.com/wukiQAQ/Linux-network-control/internal/capture"
 	"github.com/wukiQAQ/Linux-network-control/internal/config"
 	"github.com/wukiQAQ/Linux-network-control/internal/flow"
+	"github.com/wukiQAQ/Linux-network-control/internal/plugin"
 	"github.com/wukiQAQ/Linux-network-control/internal/storage"
 	"github.com/wukiQAQ/Linux-network-control/internal/updater"
 )
@@ -39,8 +40,12 @@ type Server struct {
 	// 上报给客户端/网页，避免用户看到"流量不全"时误判成采集故障。
 	filter     string
 	filteredFn func() uint64
-	started    time.Time
-	ui         fs.FS
+	// 界面插件框架（服务端部分）：已加载的声明式插件清单与加载警告
+	plugins        []plugin.Spec
+	pluginWarnings []string
+	pluginsEnabled bool
+	started        time.Time
+	ui             fs.FS
 }
 
 func New(cfg *config.Config, agg *aggregator.Agg, table *flow.Table, store storage.Backend, ui fs.FS) *Server {
@@ -73,6 +78,17 @@ func (s *Server) SetFilter(expr string, dropped func() uint64) {
 	s.filteredFn = dropped
 }
 
+// SetPlugins 注入界面插件清单与加载警告；enabled 表示配置里指定了插件目录。
+// 注入时复制并排序一次，保证接口返回顺序稳定，且不修改调用方的切片。
+func (s *Server) SetPlugins(specs []plugin.Spec, warnings []string, enabled bool) {
+	sorted := make([]plugin.Spec, len(specs))
+	copy(sorted, specs)
+	plugin.Sort(sorted)
+	s.plugins = sorted
+	s.pluginWarnings = warnings
+	s.pluginsEnabled = enabled
+}
+
 // Handler 返回路由。注意：静态页面注册在 "/"，精确 API 路径优先匹配。
 // 配置了 api.token 时，/api/ 前缀请求需要 Authorization: Bearer <token>。
 func (s *Server) Handler() http.Handler {
@@ -92,6 +108,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/files/download", s.handleFileDownload)
 	mux.HandleFunc("GET /api/v1/stream", s.handleStream)
 	mux.HandleFunc("GET /api/v1/topn", s.handleTopN)
+	mux.HandleFunc("GET /api/v1/plugins", s.handlePlugins)
 	mux.HandleFunc("GET /api/v1/system/upgrade", s.handleUpgradeStatus)
 	mux.HandleFunc("POST /api/v1/system/upgrade", s.handleUpgrade)
 	mux.Handle("/", http.FileServerFS(s.ui))
