@@ -22,6 +22,7 @@ import (
 	"github.com/wukiQAQ/Linux-network-control/internal/app"
 	"github.com/wukiQAQ/Linux-network-control/internal/capture"
 	"github.com/wukiQAQ/Linux-network-control/internal/config"
+	"github.com/wukiQAQ/Linux-network-control/internal/filter"
 	"github.com/wukiQAQ/Linux-network-control/internal/flow"
 	"github.com/wukiQAQ/Linux-network-control/internal/storage"
 	"github.com/wukiQAQ/Linux-network-control/internal/updater"
@@ -45,6 +46,18 @@ func main() {
 	src, err := buildSource(cfg)
 	if err != nil {
 		log.Fatalf("[capture] 数据源创建失败: %v", err)
+	}
+	// 采集过滤：表达式为空表示不过滤。
+	// 表达式非法时直接退出，避免"以为过滤生效了、其实一个都没过滤"的静默错误。
+	flt, err := filter.Parse(cfg.Filter)
+	if err != nil {
+		log.Fatalf("[filter] capture.filter 不可用: %v", err)
+	}
+	var filtered *capture.FilteredSource
+	if flt != nil {
+		filtered = capture.NewFilteredSource(src, flt)
+		src = filtered
+		log.Printf("[filter] 已启用采集过滤: %s（不匹配的帧在解析前丢弃）", flt)
 	}
 	defer src.Close()
 
@@ -72,6 +85,10 @@ func main() {
 	srv.SetDumper(dumper)
 	// 白名单运维动作：命令预览 + 参数校验 + 审计
 	srv.SetActions(action.NewExecutor())
+	// 过滤信息上报：客户端与网页可看到"当前过滤了什么、已过滤多少帧"
+	if filtered != nil {
+		srv.SetFilter(flt.String(), filtered.Filtered)
+	}
 	// 安全版自升级（默认关闭；开启后仅允许白名单地址 + SHA256 校验通过的新版本）
 	up := updater.New(updater.Config{
 		Enabled:         cfg.Update.Enabled,

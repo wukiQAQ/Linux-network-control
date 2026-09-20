@@ -41,7 +41,7 @@ type Config struct {
 	MachineID  string        // 机器标识，未来多机对比时的标签
 	Source     string        // 数据源：synthetic | replay | live
 	Iface      string        // 监控网卡（live 模式使用）
-	Filter     string        // BPF 过滤表达式（预留，MVP 尚未实现）
+	Filter     string        // 采集过滤表达式（pcap 常用子集，用户态匹配；空表示不过滤）
 	ReplayFile string        // pcap 回放文件路径
 	Pps        int           // synthetic 数据源每秒产生包数
 	Readers    int           // live 抓包并行队列数（1~8，默认 1）

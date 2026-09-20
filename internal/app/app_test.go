@@ -11,6 +11,7 @@ import (
 	"github.com/wukiQAQ/Linux-network-control/internal/alert"
 	"github.com/wukiQAQ/Linux-network-control/internal/capture"
 	"github.com/wukiQAQ/Linux-network-control/internal/config"
+	"github.com/wukiQAQ/Linux-network-control/internal/filter"
 	"github.com/wukiQAQ/Linux-network-control/internal/flow"
 	"github.com/wukiQAQ/Linux-network-control/internal/parser"
 	"github.com/wukiQAQ/Linux-network-control/internal/storage"
@@ -179,5 +180,79 @@ func TestAlertAutoCapture(t *testing.T) {
 	a.TickOnce(now.Add(3 * time.Second))
 	if _, active := dumper.Status(); active {
 		t.Error("开关关闭时不应自动抓包")
+	}
+}
+
+// TestFilteredReplayPipeline 验证采集过滤在整条管道上的效果：
+// 不匹配的帧在解析前被丢弃，既不计入丢包，也不会进入流表与存储。
+func TestFilteredReplayPipeline(t *testing.T) {
+	base := time.Unix(1700000000, 0).UTC()
+	aIP := netip.MustParseAddr("10.0.0.1")
+	bIP := netip.MustParseAddr("8.8.8.8")
+	cIP := netip.MustParseAddr("1.1.1.1")
+	pkts := []capture.Packet{
+		{Ts: base, Raw: parser.BuildEthIPv4TCP(aIP, bIP, 40000, 443, []byte("a"), true)},
+		{Ts: base.Add(time.Second), Raw: parser.BuildEthIPv4TCP(aIP, bIP, 40000, 443, []byte("bb"), false)},
+		{Ts: base.Add(2 * time.Second), Raw: parser.BuildEthIPv4UDP(aIP, cIP, 50000, 53, []byte("dns"))},
+		{Ts: base.Add(3 * time.Second), Raw: parser.BuildEthIPv4TCP(aIP, bIP, 40001, 80, []byte("http"), false)},
+	}
+	path := t.TempDir() + "/filtered.pcap"
+	if err := capture.WritePCAP(path, pkts); err != nil {
+		t.Fatalf("WritePCAP: %v", err)
+	}
+	inner, err := capture.OpenPcapFile(path)
+	if err != nil {
+		t.Fatalf("OpenPcapFile: %v", err)
+	}
+	defer inner.Close()
+	flt, err := filter.Parse("tcp and dst port 443")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	src := capture.NewFilteredSource(inner, flt)
+
+	cfg := config.Default()
+	table := flow.NewTable(30*time.Second, 300*time.Second, nil)
+	agg := aggregator.New(100)
+	store, err := storage.OpenFileStore(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	pipe := New(cfg, src, table, agg, store)
+
+	ctx := context.Background()
+	got := 0
+	for {
+		p, err := src.Next(ctx)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		got++
+		if !pipe.HandlePacket(p) {
+			t.Fatalf("报文解析失败: %v", p.Ts)
+		}
+	}
+	if got != 2 {
+		t.Errorf("过滤后只应剩 2 个 TCP/443 报文，实际 %d", got)
+	}
+	if src.Filtered() != 2 {
+		t.Errorf("被过滤帧数=%d, want 2", src.Filtered())
+	}
+	// 过滤不该污染丢包统计：解析失败才是丢包
+	if agg.TotalDrops() != 0 {
+		t.Errorf("被过滤的帧不应计入丢包: drops=%d", agg.TotalDrops())
+	}
+
+	pipe.TickOnce(base.Add(40 * time.Second))
+	rows, total, err := store.QuerySessions(storage.SessionFilter{}, 10, 0)
+	if err != nil || total != 1 {
+		t.Fatalf("会话总数=%d err=%v, want 1（只剩 A→B:443）", total, err)
+	}
+	if rows[0].DstPort != 443 {
+		t.Errorf("落盘会话目的端口=%d, want 443", rows[0].DstPort)
 	}
 }

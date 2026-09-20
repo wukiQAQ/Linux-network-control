@@ -35,8 +35,12 @@ type Server struct {
 	dumper  *capture.Dumper  // 可选按需抓包器，nil 表示未启用导出接口
 	updater *updater.Updater // 可选自升级器，nil 表示未启用升级接口
 	actions *action.Executor // 可选运维动作执行器，nil 表示未启用
-	started time.Time
-	ui      fs.FS
+	// 采集过滤（capture.filter）：表达式与已过滤帧数，
+	// 上报给客户端/网页，避免用户看到"流量不全"时误判成采集故障。
+	filter     string
+	filteredFn func() uint64
+	started    time.Time
+	ui         fs.FS
 }
 
 func New(cfg *config.Config, agg *aggregator.Agg, table *flow.Table, store storage.Backend, ui fs.FS) *Server {
@@ -61,6 +65,12 @@ func (s *Server) SetUpdater(u *updater.Updater) {
 // SetActions 注入运维动作执行器（nil 表示不启用动作接口）。
 func (s *Server) SetActions(e *action.Executor) {
 	s.actions = e
+}
+
+// SetFilter 注入采集过滤信息（表达式 + 已过滤帧数计数器）。
+func (s *Server) SetFilter(expr string, dropped func() uint64) {
+	s.filter = expr
+	s.filteredFn = dropped
 }
 
 // Handler 返回路由。注意：静态页面注册在 "/"，精确 API 路径优先匹配。
@@ -123,7 +133,7 @@ func (s *Server) statsMap() map[string]any {
 		rate = float64(drop) / float64(recv+drop)
 	}
 	last := s.agg.Last()
-	return map[string]any{
+	m := map[string]any{
 		"ts":           time.Now().UTC().Format(time.RFC3339),
 		"bps":          last.Bps,
 		"pps":          last.Pps,
@@ -140,6 +150,14 @@ func (s *Server) statsMap() map[string]any {
 		"version":      buildinfo.Version,
 		"features":     buildinfo.Features,
 	}
+	// 采集过滤：把表达式与已过滤帧数一并上报（仅在启用过滤时出现）
+	if s.filter != "" {
+		m["filter"] = s.filter
+		if s.filteredFn != nil {
+			m["filter_dropped"] = s.filteredFn()
+		}
+	}
+	return m
 }
 
 func (s *Server) handleNow(w http.ResponseWriter, _ *http.Request) {

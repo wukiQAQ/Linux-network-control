@@ -11,7 +11,12 @@ iface       = "eth0"          # 监控网卡（live 模式）
 readers     = 1               # 并行收包队列数，范围 1~8；>1 时启用多套接字 + PACKET_FANOUT
 pps         = 200             # synthetic 数据源每秒产生包数
 replay_file = ""              # source=replay 时必填，例如 /path/to/sample.pcap
-filter      = ""              # BPF 过滤表达式（预留，尚未实现）
+filter      = ""              # 采集过滤表达式（pcap 常用子集，用户态执行；留空表示不过滤）
+                              #   协议      ip | ip6 | arp | tcp | udp | icmp | icmp6
+                              #   主机/网段 [src|dst] host 10.0.0.5 / [src|dst] net 10.0.0.0/8
+                              #   端口      [src|dst] port 443 / portrange 1000-2000
+                              #   组合      and / or / not 与括号，例如 "tcp and dst port 443"
+                              # 表达式非法时程序启动即报错退出（不会静默地"不过滤"）；回放模式同样生效
 
 [storage]
 data_dir         = "data"             # 数据目录

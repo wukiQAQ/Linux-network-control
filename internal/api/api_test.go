@@ -634,3 +634,45 @@ func TestUpgradeAPI(t *testing.T) {
 		t.Errorf("状态查询应返回 503，实际 %d", r.StatusCode)
 	}
 }
+
+// TestFilterFields 校验采集过滤信息随实时指标一起上报（客户端据此提示"服务端正在过滤"）。
+func TestFilterFields(t *testing.T) {
+	cfg := config.Default()
+	store, err := storage.OpenFileStore(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	agg := aggregator.New(100)
+	table := flow.NewTable(time.Minute, 5*time.Minute, nil)
+	srv := New(cfg, agg, table, store, webui.FS)
+	calls := 0
+	srv.SetFilter("tcp and dst port 443", func() uint64 { calls++; return 7 })
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	var out map[string]any
+	getJSON(t, ts.URL+"/api/v1/traffic/now", &out)
+	if out["filter"] != "tcp and dst port 443" {
+		t.Errorf("filter = %v，期望规范化后的表达式", out["filter"])
+	}
+	if v, _ := out["filter_dropped"].(float64); v != 7 {
+		t.Errorf("filter_dropped = %v, want 7", out["filter_dropped"])
+	}
+	if calls == 0 {
+		t.Error("应通过注入的计数器读取已过滤帧数")
+	}
+}
+
+// TestFilterAbsentWhenDisabled 校验未启用过滤时不上报过滤字段（避免客户端误报）。
+func TestFilterAbsentWhenDisabled(t *testing.T) {
+	ts, _ := newTestServer(t)
+	var out map[string]any
+	getJSON(t, ts.URL+"/api/v1/traffic/now", &out)
+	if _, ok := out["filter"]; ok {
+		t.Error("未启用过滤时不应出现 filter 字段")
+	}
+	if _, ok := out["filter_dropped"]; ok {
+		t.Error("未启用过滤时不应出现 filter_dropped 字段")
+	}
+}

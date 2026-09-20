@@ -18,6 +18,7 @@ const (
 
 	EthTypeIPv4 = 0x0800
 	EthTypeIPv6 = 0x86dd
+	EthTypeARP  = 0x0806
 	EthTypeVLAN = 0x8100
 	EthTypeQinQ = 0x88a8
 	ethHdrLen   = 14
@@ -46,20 +47,10 @@ var (
 
 // Parse 解码一个完整以太网帧（IPv4 / IPv6）。只做"剥头提取元数据"，不做校验和验证。
 func Parse(b []byte) (*Info, error) {
-	if len(b) < ethHdrLen {
+	etype, l3, ok := etherTypeAt(b)
+	if !ok {
 		return nil, ErrShort
 	}
-	// 跳过 VLAN tag（支持单层与 QinQ），读取真正的 EtherType。
-	off := 12
-	etype := int(binary.BigEndian.Uint16(b[off:]))
-	for etype == EthTypeVLAN || etype == EthTypeQinQ {
-		off += 4
-		if len(b) < off+2 {
-			return nil, ErrShort
-		}
-		etype = int(binary.BigEndian.Uint16(b[off:]))
-	}
-	l3 := off + 2 // IP 层起点：EtherType 字段之后
 	switch etype {
 	case EthTypeIPv4:
 		return parseIPv4(b, l3)
@@ -68,6 +59,31 @@ func Parse(b []byte) (*Info, error) {
 	default:
 		return nil, fmt.Errorf("%w: ethertype=0x%04x", ErrUnsupported, etype)
 	}
+}
+
+// EtherType 返回帧的真实 EtherType（自动跳过单层 VLAN 与 QinQ 标签）。
+// 帧过短时返回 false；过滤表达式用它判断 ip/ip6/arp 这类链路层条件。
+func EtherType(b []byte) (uint16, bool) {
+	etype, _, ok := etherTypeAt(b)
+	return etype, ok
+}
+
+// etherTypeAt 返回真实 EtherType 与 L3 起点（EtherType 字段之后）。
+// 跳过 VLAN tag（支持单层与 QinQ），两者都按大端读取。
+func etherTypeAt(b []byte) (uint16, int, bool) {
+	if len(b) < ethHdrLen {
+		return 0, 0, false
+	}
+	off := 12
+	etype := int(binary.BigEndian.Uint16(b[off:]))
+	for etype == EthTypeVLAN || etype == EthTypeQinQ {
+		off += 4
+		if len(b) < off+2 {
+			return 0, 0, false
+		}
+		etype = int(binary.BigEndian.Uint16(b[off:]))
+	}
+	return uint16(etype), off + 2, true
 }
 
 // parseIPv4 解析 IPv4 头并继续解析传输层。

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wukiQAQ/Linux-network-control/internal/filter"
 )
 
 func writeTemp(t *testing.T, content string) string {
@@ -112,5 +114,35 @@ webhook = "http://127.0.0.1:9000/hook"
 	}
 	if cfg2.Alert.BpsForSecs != 30 {
 		t.Errorf("默认持续秒数=%d, want 30", cfg2.Alert.BpsForSecs)
+	}
+}
+
+// TestFilterConfigParsing 校验 capture.filter 的解析，并用过滤层解析器确认表达式可用
+// （表达式非法时服务端启动即报错，不会静默地"不过滤"）。
+func TestFilterConfigParsing(t *testing.T) {
+	p := writeTemp(t, `
+[capture]
+filter = "tcp and (host 10.0.0.5 or net 192.168.0.0/16)"
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := "tcp and (host 10.0.0.5 or net 192.168.0.0/16)"
+	if cfg.Filter != want {
+		t.Fatalf("capture.filter 未解析: %q", cfg.Filter)
+	}
+	flt, err := filter.Parse(cfg.Filter)
+	if err != nil {
+		t.Fatalf("capture.filter 无法解析: %v", err)
+	}
+	if flt.String() != want {
+		t.Errorf("规范化结果=%q, want %q", flt.String(), want)
+	}
+	if d := Default(); d.Filter != "" {
+		t.Errorf("默认 filter=%q，期望空（不过滤）", d.Filter)
+	}
+	if _, err := filter.Parse("vlan"); err == nil {
+		t.Error("非法表达式应报错")
 	}
 }
