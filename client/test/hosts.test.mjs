@@ -12,6 +12,7 @@ test("hostVersion 与 featureBadges", () => {
   assert.equal(hostVersion({ now: { version: "0.11.0" } }), "V0.11.0");
   assert.equal(hostVersion({}), "未上报");
   assert.deepEqual(featureBadges({ now: { features: ["stream", "files", "actions.run"] } }), ["运维", "文件", "实时"]);
+  assert.deepEqual(featureBadges({ now: { features: ["capture.filter"] } }), ["过滤"]);
   assert.deepEqual(featureBadges({}), []);
 });
 

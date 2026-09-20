@@ -21,6 +21,7 @@ export function featureBadges(p) {
     ["files", "文件"],
     ["stream", "实时"],
     ["alerts", "告警"],
+    ["capture.filter", "过滤"],
   ];
   return map.filter(([k]) => list.includes(k)).map(([, label]) => label);
 }

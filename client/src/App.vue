@@ -248,6 +248,10 @@
         <span class="muted">已启用能力：</span>
         <span>{{ featureText }}</span>
       </div>
+      <div v-if="filterInfo.active" class="status-line">
+        <span class="muted">采集过滤：</span>
+        <span>{{ filterInfo.text }}</span>
+      </div>
       <div v-if="missingFeatures.length" class="banner banner-err">
         服务端缺少：{{ missingFeatures.join("、") }}。<br />
         用仓库里最新的 <b>netmon-linux</b> 替换服务器旧程序并重启即可启用（客户端会自动识别）。
@@ -518,6 +522,7 @@ import { loadSettings, saveSettings } from "./settings.js";
 import { connectMessage, statusView } from "./status.js";
 import { chartModeLabel, normalizeChartMode } from "./chartmode.js";
 import { captureSupport, hasFeature } from "./capability.js";
+import { filterSummary } from "./filterinfo.js";
 import { lastUpgradeSummary, serverUpgradeEnabled, upgradeDisabledHint, upgradeResultText, validateUpgradeInput } from "./upgrade.js";
 import {
   COMMANDS_NAV,
@@ -750,6 +755,8 @@ const actionsSupported = computed(() => hasFeature(now, "actions.run"));
 const featureText = computed(() =>
   Array.isArray(now.features) && now.features.length ? now.features.join(" / ") : "未上报（旧版本）",
 );
+// 采集过滤（服务端 capture.filter）：让"流量不全"一眼看出是过滤导致，而不是采集故障
+const filterInfo = computed(() => filterSummary(now));
 const missingFeatures = computed(() => {
   if (!connected.value) return [];
   if (!Array.isArray(now.features)) return ["版本/能力上报（V0.7.0+）"];
