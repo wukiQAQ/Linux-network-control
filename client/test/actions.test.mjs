@@ -1,9 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  ACTION_NAV_KEYS,
+  COMMANDS_NAV,
   actionResultSummary,
-  categoryOfNav,
+  commandTemplates,
+  commandsDigest,
+  countActions,
+  countCommands,
   formatActionResult,
   groupActions,
   historyText,
@@ -22,12 +25,6 @@ const restart = {
   params: [{ name: "service", label: "服务名", required: true, pattern: "^[A-Za-z0-9_.@-]{1,64}$", hint: "只允许字母数字" }],
 };
 
-test("categoryOfNav 与导航分类映射", () => {
-  assert.equal(categoryOfNav("system"), "system");
-  assert.equal(categoryOfNav("syslog"), "logs");
-  assert.equal(categoryOfNav("dash"), "");
-  assert.ok(ACTION_NAV_KEYS.includes("files"));
-});
 
 test("groupActions 按分类分组且顺序固定", () => {
   const groups = groupActions([disk, restart]);
@@ -79,4 +76,36 @@ test("actionResultSummary 与 historyText", () => {
   assert.ok(actionResultSummary({ exit_code: 0, duration_ms: 12 }).includes("执行成功"));
   assert.ok(actionResultSummary({ exit_code: 3, duration_ms: 5 }).includes("退出码 3"));
   assert.ok(historyText({ title: "磁盘使用率", exit_code: 0 }).includes("磁盘使用率"));
+});
+
+test("COMMANDS_NAV 是左侧唯一的指令入口", () => {
+  assert.equal(COMMANDS_NAV.key, "cmds");
+  assert.ok(COMMANDS_NAV.label.includes("Linux"));
+});
+
+test("commandTemplates 返回命令原文（保留 {参数} 占位符）", () => {
+  assert.deepEqual(commandTemplates(restart), [
+    "systemctl restart {service}",
+    "systemctl is-active {service}",
+  ]);
+  assert.deepEqual(commandTemplates(disk), ["df -h"]);
+  assert.deepEqual(commandTemplates(null), []);
+});
+
+test("countActions / countCommands 统计动作与命令条数", () => {
+  const groups = groupActions([disk, restart]);
+  assert.equal(countActions(groups), 2);
+  assert.equal(countCommands(groups), 3);
+  assert.equal(countActions(null), 0);
+  assert.equal(countCommands(undefined), 0);
+});
+
+test("commandsDigest 按分类汇总全部指令文本", () => {
+  const text = commandsDigest(groupActions([disk, restart]));
+  assert.ok(text.startsWith("# 系统"));
+  assert.ok(text.includes("df -h"));
+  assert.ok(text.includes("systemctl restart {service}"));
+  assert.ok(text.includes("systemctl is-active {service}"));
+  assert.equal(commandsDigest(null), "");
+  assert.equal(commandsDigest(groupActions([])), "");
 });

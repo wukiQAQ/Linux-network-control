@@ -170,9 +170,12 @@
       </div>
     </aside>
 
-    <aside v-else-if="isActionNav" class="side card">
-      <div class="panel-title">{{ actionCategory.label }} · 常用操作</div>
-      <div class="muted hint">{{ actionCategory.hint }}</div>
+    <!-- Linux 指令：所有分类的白名单指令集中在这一个左侧任务选项里 -->
+    <aside v-else-if="nav === COMMANDS_NAV.key" class="side card">
+      <div class="panel-title">{{ COMMANDS_NAV.label }} · 全部指令</div>
+      <div class="muted hint">
+        共 {{ actionTotal }} 个动作 / {{ commandTotal }} 条 Linux 命令，按分类汇总在这里；点任意一条可看完整命令并执行
+      </div>
       <div v-if="!connected" class="banner banner-err">
         未连接服务器：请先在「账号管理」里连接；若连不上，说明 Linux 端 netmon 没在运行
         （在服务器上执行：systemctl status netmon / sudo ss -ltnp | grep :8080）
@@ -182,38 +185,53 @@
         <template v-if="!now.version || compareVersion(now.version, '0.8.0') < 0">：请把 Linux 端 netmon 更新到 V0.8.0 及以上</template>
         <template v-else>：该版本未包含该能力，请确认部署的是本项目最新 netmon</template>
       </div>
-      <div v-if="nav === 'files' && actionsSupported" class="file-browser">
-        <div class="muted section-title">文件浏览（白名单目录）</div>
-        <div class="row">
-          <input v-model="filePath" class="file-path" placeholder="/var/log" @keyup.enter="loadFiles" />
-          <button class="btn small" type="button" @click="loadFiles">打开</button>
-          <button class="btn small" type="button" @click="fileUp" :disabled="!parentPathOf(filePath)">上级</button>
-        </div>
-        <div v-if="fileError" class="banner banner-err">{{ fileError }}</div>
-        <div v-if="fileLoading" class="muted small">加载中…</div>
-        <div v-for="f in fileEntries" :key="f.path" class="file-row">
-          <button class="file-name" type="button" @click="openEntry(f)">
-            {{ entryIcon(f) }} {{ f.name }}
-          </button>
-          <span class="muted small">{{ f.is_dir ? "-" : fileSizeText(f.size) }}</span>
-          <button v-if="!f.is_dir" class="btn small" type="button" @click="downloadFile(f)">下载</button>
-        </div>
-        <div v-if="!fileEntries.length && !fileLoading && !fileError" class="muted empty">空目录</div>
+      <div class="row">
+        <button class="btn small" type="button" :disabled="!actionsSupported" @click="reloadCommands">刷新指令</button>
+        <button class="btn small" type="button" :disabled="!commandTotal" @click="copyAllCommands">复制全部指令</button>
       </div>
-        <div v-if="!categoryActions.length" class="muted empty">该分类暂无可用动作</div>
-        <button v-for="a in categoryActions" :key="a.id" class="action-item" type="button" @click="openAction(a)">
+
+      <section v-for="g in actionGroups" :key="g.key" class="cmd-group">
+        <div class="cmd-group-head">
+          <span class="cmd-group-title">{{ g.icon }} {{ g.label }}</span>
+          <span class="muted small">{{ g.items.length }} 个动作</span>
+        </div>
+        <div class="muted small">{{ g.hint }}</div>
+        <div v-if="!g.items.length" class="muted empty">该分类暂无可用动作</div>
+        <button v-for="a in g.items" :key="a.id" class="action-item" type="button" @click="openAction(a)">
           <span class="action-row">
             <span class="action-title">{{ a.title }}</span>
             <span v-if="a.danger" class="danger-tag">需确认</span>
           </span>
           <span class="muted small">{{ a.description }}</span>
+          <code v-for="(c, ci) in commandTemplates(a)" :key="a.id + '-cmd-' + ci" class="cmd-line">$ {{ c }}</code>
         </button>
-        <div class="muted section-title">最近执行</div>
-        <div v-if="!actionHistory.length" class="muted empty">暂无执行记录</div>
-        <div v-for="h in actionHistory.slice(0, 6)" :key="h.id" class="history-line">
-          <span class="muted small">{{ fmtTs(h.started_at) }}</span>
-          <span class="history-text">{{ historyText(h) }}</span>
+
+        <div v-if="g.key === 'files' && actionsSupported" class="file-browser">
+          <div class="muted section-title">文件浏览（白名单目录）</div>
+          <div class="row">
+            <input v-model="filePath" class="file-path" placeholder="/var/log" @keyup.enter="loadFiles" />
+            <button class="btn small" type="button" @click="loadFiles">打开</button>
+            <button class="btn small" type="button" @click="fileUp" :disabled="!parentPathOf(filePath)">上级</button>
+          </div>
+          <div v-if="fileError" class="banner banner-err">{{ fileError }}</div>
+          <div v-if="fileLoading" class="muted small">加载中…</div>
+          <div v-for="f in fileEntries" :key="f.path" class="file-row">
+            <button class="file-name" type="button" @click="openEntry(f)">
+              {{ entryIcon(f) }} {{ f.name }}
+            </button>
+            <span class="muted small">{{ f.is_dir ? "-" : fileSizeText(f.size) }}</span>
+            <button v-if="!f.is_dir" class="btn small" type="button" @click="downloadFile(f)">下载</button>
+          </div>
+          <div v-if="!fileEntries.length && !fileLoading && !fileError" class="muted empty">空目录</div>
         </div>
+      </section>
+
+      <div class="muted section-title">最近执行</div>
+      <div v-if="!actionHistory.length" class="muted empty">暂无执行记录</div>
+      <div v-for="h in actionHistory.slice(0, 6)" :key="h.id" class="history-line">
+        <span class="muted small">{{ fmtTs(h.started_at) }}</span>
+        <span class="history-text">{{ historyText(h) }}</span>
+      </div>
     </aside>
 
     <aside v-else-if="nav === 'logs'" class="side card">
@@ -502,9 +520,12 @@ import { chartModeLabel, normalizeChartMode } from "./chartmode.js";
 import { captureSupport, hasFeature } from "./capability.js";
 import { lastUpgradeSummary, serverUpgradeEnabled, upgradeDisabledHint, upgradeResultText, validateUpgradeInput } from "./upgrade.js";
 import {
-  ACTION_NAV_KEYS,
+  COMMANDS_NAV,
   actionResultSummary,
-  categoryOfNav,
+  commandTemplates,
+  commandsDigest,
+  countActions,
+  countCommands,
   formatActionResult,
   groupActions,
   historyText,
@@ -543,11 +564,7 @@ const navItems = [
   { key: "accounts", icon: "👤", label: "账号管理" },
   { key: "hosts", icon: "🖥", label: "主机" },
   { key: "topn", icon: "📈", label: "排行" },
-  { key: "system", icon: "🖥️", label: "系统" },
-  { key: "network", icon: "🌐", label: "网络" },
-  { key: "service", icon: "🧩", label: "服务" },
-  { key: "syslog", icon: "📜", label: "系统日志" },
-  { key: "files", icon: "📁", label: "文件" },
+  { key: COMMANDS_NAV.key, icon: COMMANDS_NAV.icon, label: COMMANDS_NAV.label },
   { key: "logs", icon: "📋", label: "连接日志" },
 ];
 
@@ -711,6 +728,10 @@ watch(nav, (v) => {
     probeAllHosts();
     hostTimer = setInterval(probeAllHosts, 15000);
   }
+  // 打开「Linux 指令」面板时刷新一次指令清单与最近执行
+  if (v === COMMANDS_NAV.key) {
+    reloadCommands();
+  }
 });
 // ---------- 运维动作（白名单动作） ----------
 const actions = ref([]);
@@ -737,13 +758,10 @@ const missingFeatures = computed(() => {
     .filter(([key]) => !now.features.includes(key))
     .map(([, label]) => label);
 });
-const isActionNav = computed(() => ACTION_NAV_KEYS.includes(nav.value));
-const actionCategory = computed(() => {
-  const key = categoryOfNav(nav.value);
-  const groups = groupActions(actions.value);
-  return groups.find((g) => g.key === key) || { key: "", label: "运维", hint: "", items: [] };
-});
-const categoryActions = computed(() => actionCategory.value.items || []);
+// 左侧「Linux 指令」面板：所有分类的指令集中在同一个面板里展示
+const actionGroups = computed(() => groupActions(actions.value));
+const actionTotal = computed(() => countActions(actionGroups.value));
+const commandTotal = computed(() => countCommands(actionGroups.value));
 // ---------- 文件通道（浏览 + 下载 Linux 文件） ----------
 const filePath = ref("/var/log");
 const fileEntries = ref([]);
@@ -1346,6 +1364,11 @@ async function loadActionHistory() {
     actionHistory.value = [];
   }
 }
+// 手动刷新指令清单（服务端动作目录 + 最近执行记录）
+function reloadCommands() {
+  loadActions();
+  loadActionHistory();
+}
 
 // 打开动作弹窗：立刻显示将要执行的命令，避免"点下去不知道做了什么"
 function openAction(a) {
@@ -1397,8 +1420,8 @@ async function runAction() {
   }
 }
 
-function copyActionCommands() {
-  const text = actionPreview.value;
+// 复制文本到剪贴板（失败时给出可操作的提示）
+function copyText(text) {
   if (!text) return;
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(text).then(
@@ -1408,6 +1431,15 @@ function copyActionCommands() {
   } else {
     pushLog("当前环境不支持自动复制，请手动选择命令文本");
   }
+}
+
+function copyActionCommands() {
+  copyText(actionPreview.value);
+}
+
+// 复制"全部指令"清单（按分类分节，便于留档或交给同事）
+function copyAllCommands() {
+  copyText(commandsDigest(actionGroups.value));
 }
 
 function startTimers() {
@@ -1817,6 +1849,23 @@ onBeforeUnmount(() => {
 .file-name { flex: 1; text-align: left; background: none; border: none; color: var(--text); font-size: 12px; cursor: pointer; padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-name:hover { color: var(--accent); }
 .history-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Linux 指令面板：按分类分节展示全部白名单命令 */
+.cmd-group { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 10px; }
+.cmd-group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.cmd-group-title { font-size: 13px; font-weight: 600; }
+.cmd-line {
+  display: block;
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  color: var(--accent);
+  background: rgb(var(--panel-rgb) / var(--alpha, 1));
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 2px 6px;
+  margin-top: 3px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
 .action-dialog { max-width: 720px; }
 .cmd-box, .out-box {
   background: var(--panel2);
