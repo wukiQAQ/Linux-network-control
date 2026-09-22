@@ -17,6 +17,8 @@ filter      = ""              # 采集过滤表达式（pcap 常用子集，用�
                               #   端口      [src|dst] port 443 / portrange 1000-2000
                               #   组合      and / or / not 与括号，例如 "tcp and dst port 443"
                               # 表达式非法时程序启动即报错退出（不会静默地"不过滤"）；回放模式同样生效
+                              # live 模式下会自动尝试把等价的"保守超集"程序下发到内核（SO_ATTACH_FILTER）做剪枝，
+                              # 挂载失败或无法保守表达时自动退回用户态过滤，不影响正确性（/api/v1/traffic/now 的 filter_kernel 表示是否启用）
 
 [storage]
 data_dir         = "data"             # 数据目录

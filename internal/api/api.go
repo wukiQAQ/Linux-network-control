@@ -38,8 +38,9 @@ type Server struct {
 	actions *action.Executor // 可选运维动作执行器，nil 表示未启用
 	// 采集过滤（capture.filter）：表达式与已过滤帧数，
 	// 上报给客户端/网页，避免用户看到"流量不全"时误判成采集故障。
-	filter     string
-	filteredFn func() uint64
+	filter       string
+	filteredFn   func() uint64
+	filterKernel bool
 	// 界面插件框架（服务端部分）：已加载的声明式插件清单与加载警告
 	plugins        []plugin.Spec
 	pluginWarnings []string
@@ -72,10 +73,11 @@ func (s *Server) SetActions(e *action.Executor) {
 	s.actions = e
 }
 
-// SetFilter 注入采集过滤信息（表达式 + 已过滤帧数计数器）。
-func (s *Server) SetFilter(expr string, dropped func() uint64) {
+// SetFilter 注入采集过滤信息（表达式 + 已过滤帧数计数器 + 是否启用了内核剪枝）。
+func (s *Server) SetFilter(expr string, dropped func() uint64, kernel bool) {
 	s.filter = expr
 	s.filteredFn = dropped
+	s.filterKernel = kernel
 }
 
 // SetPlugins 注入界面插件清单与加载警告；enabled 表示配置里指定了插件目录。
@@ -170,6 +172,7 @@ func (s *Server) statsMap() map[string]any {
 	// 采集过滤：把表达式与已过滤帧数一并上报（仅在启用过滤时出现）
 	if s.filter != "" {
 		m["filter"] = s.filter
+		m["filter_kernel"] = s.filterKernel
 		if s.filteredFn != nil {
 			m["filter_dropped"] = s.filteredFn()
 		}

@@ -9,6 +9,7 @@ package capture
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/wukiQAQ/Linux-network-control/internal/filter"
 )
 
 const (
@@ -256,6 +259,30 @@ func (l *Live) nextSingle(ctx context.Context) (*Packet, error) {
 		copy(raw, buf[:n])
 		return &Packet{Ts: time.Now().UTC(), Raw: raw, Iface: l.iface}, nil
 	}
+}
+
+// AttachKernelFilter 把过滤程序下发到内核（SO_ATTACH_FILTER），让内核在读入用户态之前
+// 就丢掉明显不匹配的帧，省掉拷贝与解析开销。
+// 程序由 internal/filter 生成为"用户态条件的超集"，因此不会误丢需要采集的流量；
+// 多队列模式下每个套接字都要挂同一份程序。
+func (l *Live) AttachKernelFilter(prog filter.Program) error {
+	if len(prog) == 0 {
+		return errors.New("空的过滤程序")
+	}
+	if len(prog) > 4096 {
+		return fmt.Errorf("过滤程序过长（%d 条，内核上限 4096 条）", len(prog))
+	}
+	filters := make([]unix.SockFilter, len(prog))
+	for i, ins := range prog {
+		filters[i] = unix.SockFilter{Code: ins.Code, Jt: ins.JT, Jf: ins.JF, K: ins.K}
+	}
+	fprog := &unix.SockFprog{Len: uint16(len(filters)), Filter: &filters[0]}
+	for _, fd := range l.fds {
+		if err := unix.SetsockoptSockFprog(fd, unix.SOL_SOCKET, unix.SO_ATTACH_FILTER, fprog); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Close 关闭全部套接字并等待读循环退出，可重复调用。

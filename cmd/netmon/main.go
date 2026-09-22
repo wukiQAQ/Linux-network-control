@@ -88,7 +88,7 @@ func main() {
 	srv.SetActions(action.NewExecutor())
 	// 过滤信息上报：客户端与网页可看到"当前过滤了什么、已过滤多少帧"
 	if filtered != nil {
-		srv.SetFilter(flt.String(), filtered.Filtered)
+		srv.SetFilter(flt.String(), filtered.Filtered, filtered.KernelAttached())
 	}
 	// 界面插件框架：读取插件目录里的声明式清单（纯 JSON，不含可执行代码）
 	specs, pluginWarnings, err := plugin.Load(cfg.Plugins.Dir)

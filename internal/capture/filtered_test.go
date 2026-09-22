@@ -2,6 +2,7 @@ package capture
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/netip"
 	"testing"
@@ -133,5 +134,98 @@ func TestFilteredSourceReplay(t *testing.T) {
 	}
 	if _, err := fs.Next(context.Background()); err != io.EOF {
 		t.Errorf("期望 EOF，实际 %v", err)
+	}
+}
+
+// fakeKernelSource 模拟 Linux 的 Live：记录收到的内核程序，可模拟挂载失败。
+type fakeKernelSource struct {
+	fakeSource
+	attached filter.Program
+	err      error
+}
+
+func (f *fakeKernelSource) AttachKernelFilter(prog filter.Program) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.attached = prog
+	return nil
+}
+
+// TestFilteredSourceAttachesKernelProgram 校验：支持内核下沉时挂上程序，且过滤行为仍由用户态决定。
+func TestFilteredSourceAttachesKernelProgram(t *testing.T) {
+	src := &fakeKernelSource{fakeSource: fakeSource{frames: [][]byte{tcpFrame(51000, 443), udpFrame(40000, 53)}}}
+	flt, err := filter.Parse("tcp and host 10.0.0.5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs := NewFilteredSource(src, flt)
+	if !fs.KernelAttached() {
+		t.Fatal("应启用内核剪枝")
+	}
+	if len(src.attached) == 0 {
+		t.Fatal("应把保守超集程序下发给数据源")
+	}
+	ctx := context.Background()
+	p, err := fs.Next(ctx)
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if len(p.Raw) != len(src.frames[0]) {
+		t.Error("应放行 TCP/443 帧")
+	}
+	if _, err := fs.Next(ctx); err != io.EOF {
+		t.Errorf("期望 EOF，实际 %v", err)
+	}
+	if fs.Filtered() != 1 {
+		t.Errorf("用户态仍应过滤掉 UDP 帧：Filtered()=%d, want 1", fs.Filtered())
+	}
+}
+
+// TestFilteredSourceKernelAttachFailure 校验：内核挂载失败只影响剪枝，不影响过滤与采集。
+func TestFilteredSourceKernelAttachFailure(t *testing.T) {
+	src := &fakeKernelSource{
+		fakeSource: fakeSource{frames: [][]byte{tcpFrame(1, 443)}},
+		err:        errors.New("operation not permitted"),
+	}
+	flt, err := filter.Parse("tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs := NewFilteredSource(src, flt)
+	if fs.KernelAttached() {
+		t.Error("挂载失败时不应标记为已启用")
+	}
+	if _, err := fs.Next(context.Background()); err != nil {
+		t.Fatalf("挂载失败不应影响采集: %v", err)
+	}
+}
+
+// TestFilteredSourceNoPruningNoAttach 校验：无法保守表达（not 子表达式）时不下发内核程序。
+func TestFilteredSourceNoPruningNoAttach(t *testing.T) {
+	src := &fakeKernelSource{fakeSource: fakeSource{frames: [][]byte{tcpFrame(1, 2)}}}
+	flt, err := filter.Parse("not tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs := NewFilteredSource(src, flt)
+	if src.attached != nil || fs.KernelAttached() {
+		t.Error("not 表达式没有剪枝价值，不应下发内核程序")
+	}
+}
+
+// TestFilteredSourceNoKernelSupport 校验：数据源不支持内核下沉（回放 / 演示）时静默跳过。
+func TestFilteredSourceNoKernelSupport(t *testing.T) {
+	src := &fakeSource{frames: [][]byte{tcpFrame(1, 443)}}
+	flt, err := filter.Parse("tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs := NewFilteredSource(src, flt)
+	if fs.KernelAttached() {
+		t.Error("数据源不支持内核下沉时不应标记为已启用")
+	}
+	if _, err := fs.Next(context.Background()); err != nil {
+		t.Fatalf("应照常返回帧: %v", err)
 	}
 }

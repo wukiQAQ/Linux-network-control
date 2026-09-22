@@ -648,7 +648,7 @@ func TestFilterFields(t *testing.T) {
 	table := flow.NewTable(time.Minute, 5*time.Minute, nil)
 	srv := New(cfg, agg, table, store, webui.FS)
 	calls := 0
-	srv.SetFilter("tcp and dst port 443", func() uint64 { calls++; return 7 })
+	srv.SetFilter("tcp and dst port 443", func() uint64 { calls++; return 7 }, true)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -662,6 +662,9 @@ func TestFilterFields(t *testing.T) {
 	}
 	if calls == 0 {
 		t.Error("应通过注入的计数器读取已过滤帧数")
+	}
+	if out["filter_kernel"] != true {
+		t.Errorf("filter_kernel = %v, want true（客户端据此提示内核剪枝已启用）", out["filter_kernel"])
 	}
 }
 
