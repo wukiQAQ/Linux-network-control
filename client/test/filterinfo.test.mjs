@@ -24,3 +24,15 @@ test("缺少数值字段时只展示表达式", () => {
   assert.ok(!s.text.includes("NaN"));
   assert.ok(!s.text.includes("null"));
 });
+
+test("内核剪枝启用时单独标注", () => {
+  const withCount = filterSummary({ filter: "host 10.0.0.5", filter_dropped: 12, filter_kernel: true });
+  assert.ok(withCount.text.includes("已过滤 12 帧"));
+  assert.ok(withCount.text.includes("内核剪枝已启用"));
+  const noCount = filterSummary({ filter: "host 10.0.0.5", filter_kernel: true });
+  assert.ok(noCount.text.includes("内核剪枝已启用"));
+  assert.ok(!noCount.text.includes("已过滤"));
+  const userland = filterSummary({ filter: "host 10.0.0.5", filter_dropped: 3 });
+  assert.ok(!userland.text.includes("内核剪枝"));
+  assert.ok(userland.text.includes("已过滤 3 帧"));
+});
