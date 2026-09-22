@@ -81,6 +81,7 @@ demo/index.html          # 纯前端界面演示（模拟数据，评估交互�
 - Linux 真实抓包入口（`source = "live"`，需 root / CAP_NET_RAW）
 - 多队列抓包：`[capture] readers = 1~8`（多套接字 + `PACKET_FANOUT` 按流哈希分流，失败自动回退单队列）
 - 采集过滤：`[capture] filter = "tcp and dst port 443"`（pcap 常用子集、用户态匹配；表达式非法时启动即报错，回放同样生效）
+- 内核剪枝：`live` 模式下把过滤条件编译成"保守超集"BPF 程序经 `SO_ATTACH_FILTER` 挂到网卡套接字（只剪枝、不误丢，挂载失败自动退回用户态）
 - 界面插件框架：`[plugins] dir` 下发声明式面板（kpi / 表格 / 说明，无代码执行），客户端「🧩 插件」按能力门控展示并可逐个启停
 - 安全版自升级：白名单 URL + SHA256 + ELF 校验 + 原子替换 + 备份回滚（默认关闭）
 - 可选 Bearer Token 鉴权：`[api] token = "..."` 后，`/api/` 请求需携带 `Authorization: Bearer <token>`
@@ -135,6 +136,8 @@ demo/index.html          # 纯前端界面演示（模拟数据，评估交互�
 | V0.12.6 ✅ | 客户端展示服务端采集过滤状态（表达式 + 已过滤帧数）（已实现） |
 | V0.19.0 ✅ | 采集端界面插件框架（`[plugins] dir` 声明式清单 + `GET /api/v1/plugins`）（已实现） |
 | V0.12.7 ✅ | 客户端界面插件面板（插件注册表 + 通用渲染 + 启停记忆）（已实现） |
+| V0.20.0 ✅ | 采集端内核级过滤剪枝（`SO_ATTACH_FILTER`，保守超集语义 + `filter_kernel` 上报）（已实现） |
+| V0.12.8 ✅ | 客户端标注内核剪枝状态（"已过滤 N 帧"只统计用户态部分）（已实现） |
 | V2 | 告警引擎、TOP N、协议分布、IPv6、WebSocket、鉴权细化、界面插件框架（多队列已在 V0.17.0 完成） |
 | V3 | 客户端增强：WebSocket 实时推送、多机对比、Windows 通知、帮助中心型 AI |
 | V4 | 流量控制：Linux 端 tc 限速（仅本机流量，默认关闭 + 二次确认）+ 控制 API/界面 |
@@ -176,7 +179,7 @@ npx tauri build            # 产物：client/src-tauri/target/release/metd.exe�
 # Go 端（Linux Agent）
 go vet ./... && go test ./...
 
-# 前端单元测试（格式化 / 状态 / 设置 / 标签页 / 账号管理 / 图表缩放 / 模板处理器 / 能力判断 / 升级校验 / 过滤状态 / 插件清单，共 123 个用例）
+# 前端单元测试（格式化 / 状态 / 设置 / 标签页 / 账号管理 / 图表缩放 / 模板处理器 / 能力判断 / 升级校验 / 过滤状态 / 插件清单，共 124 个用例）
 cd client && npm test
 ```
 
