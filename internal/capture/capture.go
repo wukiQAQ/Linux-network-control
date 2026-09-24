@@ -8,6 +8,8 @@ package capture
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -59,6 +61,44 @@ func shouldPollStats(n uint64) bool { return n > 0 && n%statsPollEvery == 0 }
 type atomicStats struct {
 	packets atomic.Uint64
 	drops   atomic.Uint64
+}
+
+// planCPUAssignment 给 n 个读循环分配 CPU：优先一个循环一个核，核不够时按顺序循环复用；
+// allowed 为空时返回 n 个 -1，表示不绑定（保持原有调度行为）。
+func planCPUAssignment(allowed []int, n int) []int {
+	out := make([]int, n)
+	if n <= 0 {
+		return out
+	}
+	valid := make([]int, 0, len(allowed))
+	for _, c := range allowed {
+		if c >= 0 {
+			valid = append(valid, c)
+		}
+	}
+	if len(valid) == 0 {
+		for i := range out {
+			out[i] = -1
+		}
+		return out
+	}
+	for i := range out {
+		out[i] = valid[i%len(valid)]
+	}
+	return out
+}
+
+// cpuPlanText 把 CPU 分配结果整理成一行日志文本。
+func cpuPlanText(plan []int) string {
+	parts := make([]string, 0, len(plan))
+	for i, cpu := range plan {
+		if cpu < 0 {
+			parts = append(parts, fmt.Sprintf("reader%d→不绑定", i))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("reader%d→CPU%d", i, cpu))
+	}
+	return strings.Join(parts, " ")
 }
 
 func (s *atomicStats) addPacket() { s.packets.Add(1) }

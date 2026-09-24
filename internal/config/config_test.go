@@ -175,3 +175,18 @@ func TestPluginConfigParsing(t *testing.T) {
 		t.Fatalf("应加载 1 个插件: %+v", specs)
 	}
 }
+
+// TestCaptureCPUPinParsing 校验 capture.readers 与 capture.cpu_pin 的解析。
+func TestCaptureCPUPinParsing(t *testing.T) {
+	p := writeTemp(t, "[capture]\nreaders = 4\ncpu_pin = true\n")
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Readers != 4 || !cfg.CPUPin {
+		t.Fatalf("readers=%d cpu_pin=%v, want 4/true", cfg.Readers, cfg.CPUPin)
+	}
+	if d := Default(); d.CPUPin {
+		t.Error("默认应关闭 CPU 绑定（保持原有调度行为）")
+	}
+}

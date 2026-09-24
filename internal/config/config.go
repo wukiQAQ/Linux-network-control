@@ -50,6 +50,7 @@ type Config struct {
 	ReplayFile string        // pcap 回放文件路径
 	Pps        int           // synthetic 数据源每秒产生包数
 	Readers    int           // live 抓包并行队列数（1~8，默认 1）
+	CPUPin     bool          // 多队列时是否把读循环绑定到不同 CPU（默认 false）
 	Tick       time.Duration // 指标聚合周期
 	DataDir    string        // 数据存储目录
 	Storage    string        // 存储后端：sqlite | file
@@ -149,6 +150,11 @@ func (c *Config) apply(v map[string]string) {
 	}
 	if s, ok := v["capture.replay_file"]; ok {
 		c.ReplayFile = s
+	}
+	if s, ok := v["capture.cpu_pin"]; ok {
+		if b, err := strconv.ParseBool(s); err == nil {
+			c.CPUPin = b
+		}
 	}
 	if n, ok := v["capture.readers"]; ok {
 		if i, err := strconv.Atoi(n); err == nil && i > 0 {

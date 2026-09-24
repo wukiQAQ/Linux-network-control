@@ -10,7 +10,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -32,6 +34,9 @@ const (
 	packetFanout    = 18
 	fanoutModeHash  = 0
 	fanoutGroupMask = 0xffff
+
+	// maxCPUIDs 是 Linux 的 _CPU_SETSIZE：CPU 亲和掩码最多覆盖 1024 个逻辑核。
+	maxCPUIDs = 1024
 
 	// recvTimeoutUsec 是套接字的接收超时（微秒）。
 	// 有了它，阻塞在 recvfrom 上的 goroutine 最多 200ms 就返回一次，
@@ -56,6 +61,9 @@ type Live struct {
 	readers int
 	pkts    chan *Packet
 	wg      sync.WaitGroup
+	// CPU 绑定：cpuPin 为 true 时把各读循环线程绑到不同 CPU（仅多队列模式有意义）
+	cpuPin  bool
+	cpuPlan []int
 
 	// 读缓冲复用：避免每包分配 64KB
 	bufs sync.Pool
@@ -70,8 +78,14 @@ func NewLive(iface string) (*Live, error) {
 	return NewLiveWithReaders(iface, MinReaders)
 }
 
-// NewLiveWithReaders 打开 1~8 个套接字并行收包（多队列）。
+// NewLiveWithReaders 打开 1~8 个套接字并行收包（多队列），不做 CPU 绑定。
 func NewLiveWithReaders(iface string, readers int) (*Live, error) {
+	return NewLiveWithReadersPinned(iface, readers, false)
+}
+
+// NewLiveWithReadersPinned 同上，并可选择把各读循环线程绑定到不同 CPU（cpu_pin = true）。
+// 绑定只影响多队列模式的读循环；单队列由调用方 goroutine 读取，不做绑定。
+func NewLiveWithReadersPinned(iface string, readers int, cpuPin bool) (*Live, error) {
 	readers = normalizeReaders(readers)
 	ifi, err := net.InterfaceByName(iface)
 	if err != nil {
@@ -98,7 +112,7 @@ func NewLiveWithReaders(iface string, readers int) (*Live, error) {
 	if err != nil {
 		return nil, err
 	}
-	l := &Live{fd: first, fds: []int{first}, iface: iface, readers: 1, done: make(chan struct{})}
+	l := &Live{fd: first, fds: []int{first}, iface: iface, readers: 1, done: make(chan struct{}), cpuPin: cpuPin}
 	l.bufs.New = func() any {
 		b := make([]byte, 65536)
 		return &b
@@ -145,16 +159,58 @@ func NewLiveWithReaders(iface string, readers int) (*Live, error) {
 	}
 	l.readers = len(l.fds)
 	l.pkts = make(chan *Packet, 1024*l.readers)
+	// CPU 绑定：多队列下每个读循环独占一个核，减少线程在核间迁移带来的抖动。
+	l.cpuPlan = planCPUAssignment(nil, l.readers)
+	if l.cpuPin {
+		if allowed := allowedCPUs(); len(allowed) > 0 {
+			l.cpuPlan = planCPUAssignment(allowed, l.readers)
+			log.Printf("[capture] 多队列 CPU 绑定已启用：%s", cpuPlanText(l.cpuPlan))
+		} else {
+			log.Printf("[capture] cpu_pin 已开启，但读不到可用 CPU 列表（cgroup/taskset 限制），跳过绑定")
+		}
+	}
 	l.wg.Add(l.readers)
 	for i := 0; i < l.readers; i++ {
-		go l.readLoop(l.fds[i])
+		go l.readLoop(l.fds[i], l.cpuPlan[i])
 	}
 	return l, nil
 }
 
+// allowedCPUs 返回当前进程被允许使用的 CPU 列表（cgroup / taskset 下可能只是子集）。
+// 读不到时返回 nil，调用方据此跳过绑定。
+func allowedCPUs() []int {
+	var set unix.CPUSet
+	if err := unix.SchedGetaffinity(0, &set); err != nil {
+		return nil
+	}
+	out := make([]int, 0, 8)
+	for cpu := 0; cpu < maxCPUIDs; cpu++ {
+		if set.IsSet(cpu) {
+			out = append(out, cpu)
+		}
+	}
+	return out
+}
+
+// pinCPU 把当前 OS 线程绑到指定 CPU（调用方需先 runtime.LockOSThread）。
+func pinCPU(cpu int) error {
+	var set unix.CPUSet
+	set.Zero()
+	set.Set(cpu)
+	return unix.SchedSetaffinity(0, &set)
+}
+
 // readLoop 是单个套接字的读循环（多队列模式）。
-func (l *Live) readLoop(fd int) {
+// cpu >= 0 时，把读循环固定在一个 OS 线程上并绑到该 CPU。
+func (l *Live) readLoop(fd, cpu int) {
 	defer l.wg.Done()
+	if cpu >= 0 {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		if err := pinCPU(cpu); err != nil {
+			log.Printf("[capture] 读循环绑定 CPU%d 失败（继续不绑定）: %v", cpu, err)
+		}
+	}
 	bp := l.bufs.Get().(*[]byte)
 	buf := *bp
 	defer l.bufs.Put(bp)

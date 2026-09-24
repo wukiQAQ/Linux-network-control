@@ -15,6 +15,11 @@ func NewLive(_ string) (Source, error) {
 	return nil, errors.New(errLiveUnsupported)
 }
 
+// NewLiveWithReadersPinned 在非 Linux 平台同样返回错误（CPU 绑定依赖 Linux 的 sched_setaffinity）。
+func NewLiveWithReadersPinned(_ string, _ int, _ bool) (Source, error) {
+	return nil, errors.New(errLiveUnsupported)
+}
+
 // NewLiveWithReaders 在非 Linux 平台同样返回错误。
 // 多队列收包基于 Linux AF_PACKET 的 PACKET_FANOUT，其他系统没有等价实现；
 // 这里保留同名函数是为了让上层的调用点在 Windows/macOS 上也能编译通过。

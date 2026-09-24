@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/netip"
+	"runtime"
 	"testing"
 	"time"
 
@@ -87,5 +88,54 @@ func TestShouldPollStats(t *testing.T) {
 	}
 	if statsPollEvery != 128 {
 		t.Errorf("节流步长应为 128，实际 %d", statsPollEvery)
+	}
+}
+
+// TestPlanCPUAssignment 校验多队列的 CPU 分配：一核一个、核不够循环复用、无可用 CPU 时不绑定。
+func TestPlanCPUAssignment(t *testing.T) {
+	cases := []struct {
+		name    string
+		allowed []int
+		n       int
+		want    []int
+	}{
+		{"两队列两核", []int{2, 3, 4, 5}, 2, []int{2, 3}},
+		{"四队列四核", []int{2, 3, 4, 5}, 4, []int{2, 3, 4, 5}},
+		{"核不够循环复用", []int{2, 3}, 5, []int{2, 3, 2, 3, 2}},
+		{"只有一个核", []int{7}, 3, []int{7, 7, 7}},
+		{"没有可用 CPU 时不绑定", nil, 2, []int{-1, -1}},
+		{"忽略非法 CPU 号", []int{-1, 3}, 2, []int{3, 3}},
+		{"零队列", []int{1}, 0, []int{}},
+	}
+	for _, c := range cases {
+		got := planCPUAssignment(c.allowed, c.n)
+		if len(got) != len(c.want) {
+			t.Fatalf("%s: 长度=%d, want %d", c.name, len(got), len(c.want))
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Fatalf("%s: %v, want %v", c.name, got, c.want)
+			}
+		}
+	}
+}
+
+// TestCPUPlanText 校验绑定日志文案（便于在真机日志里一眼确认绑定结果）。
+func TestCPUPlanText(t *testing.T) {
+	if got := cpuPlanText([]int{2, 3}); got != "reader0→CPU2 reader1→CPU3" {
+		t.Errorf("cpuPlanText = %q", got)
+	}
+	if got := cpuPlanText([]int{-1}); got != "reader0→不绑定" {
+		t.Errorf("cpuPlanText = %q", got)
+	}
+}
+
+// TestNewLiveWithReadersPinnedUnsupported 校验非 Linux 平台给出明确错误（Linux 上的真实路径由真机验证）。
+func TestNewLiveWithReadersPinnedUnsupported(t *testing.T) {
+	if runtime.GOOS == "linux" {
+		t.Skip("Linux 平台有真实实现，无需此断言")
+	}
+	if _, err := NewLiveWithReadersPinned("eth0", 2, true); err == nil {
+		t.Error("非 Linux 平台应返回错误")
 	}
 }

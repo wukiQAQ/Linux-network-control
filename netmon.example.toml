@@ -9,6 +9,7 @@ tick_ms     = 1000            # 指标聚合周期（毫秒）
 [capture]
 iface       = "eth0"          # 监控网卡（live 模式）
 readers     = 1               # 并行收包队列数，范围 1~8；>1 时启用多套接字 + PACKET_FANOUT
+cpu_pin     = false           # 多队列时把各读循环绑定到不同 CPU（仅 readers>1 生效；读不到 CPU 列表时自动跳过）
 pps         = 200             # synthetic 数据源每秒产生包数
 replay_file = ""              # source=replay 时必填，例如 /path/to/sample.pcap
 filter      = ""              # 采集过滤表达式（pcap 常用子集，用户态执行；留空表示不过滤）
