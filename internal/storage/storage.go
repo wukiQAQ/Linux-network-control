@@ -11,9 +11,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -44,12 +46,34 @@ type FlowRecord struct {
 }
 
 // SessionFilter 会话查询条件（零值表示不限制）。
+// IP 支持三种写法（都会走索引，不再做全表子串匹配）：
+//   - 完整 IP（如 10.0.0.5）：精确匹配源或目的；
+//   - 前缀（如 10.0.）：匹配源或目的的前缀；
+//   - 其它：按前缀处理（不做 "%x%" 子串匹配）。
 type SessionFilter struct {
 	IP    string
 	Proto uint8
 	Port  uint16
 	From  time.Time
 	To    time.Time
+}
+
+// AggEntry 是一个聚合分组（Key 的含义由维度决定：IP / 协议号 / 端口号）。
+type AggEntry struct {
+	Key     string
+	Flows   int
+	Packets uint64
+	Bytes   uint64
+	Percent float64 // 在该维度总量中的字节占比（0~100）
+}
+
+// FlowAggregate 是会话聚合结果：IP 与端口按双向计入（一条会话两端都上榜），协议按整条会话计入。
+type FlowAggregate struct {
+	TotalFlows int
+	TotalBytes uint64
+	ByIP       []AggEntry
+	ByProto    []AggEntry
+	ByPort     []AggEntry
 }
 
 // Backend 存储接口：SQLite/InfluxDB/ClickHouse 都可作为实现。
@@ -60,6 +84,9 @@ type Backend interface {
 	AppendFlow(f FlowRecord) error
 	QueryMetrics(series string, from, to time.Time) ([]MetricPoint, error)
 	QuerySessions(f SessionFilter, limit, offset int) ([]FlowRecord, int, error)
+	// AggregateFlows 按维度聚合会话记录。
+	// SQL 后端在数据库内聚合（不受"只取前 N 条样本"限制），文件后端在内存里做等价聚合。
+	AggregateFlows(f SessionFilter, limit int) (FlowAggregate, error)
 	Prune(now time.Time) error
 	Close() error
 }
@@ -178,19 +205,8 @@ func (s *FileStore) QuerySessions(f SessionFilter, limit, offset int) ([]FlowRec
 	defer s.mu.Unlock()
 	var out []FlowRecord
 	for _, r := range s.flows {
-		if f.IP != "" && !strings.Contains(r.SrcIP, f.IP) && !strings.Contains(r.DstIP, f.IP) {
-			continue
-		}
-		if f.Proto != 0 && r.Proto != f.Proto {
-			continue
-		}
-		if f.Port != 0 && r.SrcPort != f.Port && r.DstPort != f.Port {
-			continue
-		}
-		if !f.From.IsZero() && r.Start.Before(f.From) {
-			continue
-		}
-		if !f.To.IsZero() && r.Start.After(f.To) {
+		// 与 SQLite 版共用 matchFlow：完整 IP 精确匹配、其它按前缀匹配（不再做子串匹配）
+		if !matchFlow(r, f) {
 			continue
 		}
 		out = append(out, r)
@@ -347,4 +363,141 @@ func (l flowLine) record() FlowRecord {
 		Proto: l.Proto, Packets: l.Packets, Bytes: l.Bytes, TCPFlags: l.TCPFlags,
 		Iface: l.Iface, MachineID: l.MachineID,
 	}
+}
+
+// ---------- 会话聚合（供排行使用） ----------
+
+type aggCounter struct {
+	flows   int
+	packets uint64
+	bytes   uint64
+}
+
+func addAgg(m map[string]*aggCounter, key string, r FlowRecord) {
+	if key == "" || key == "0" {
+		return
+	}
+	c := m[key]
+	if c == nil {
+		c = &aggCounter{}
+		m[key] = c
+	}
+	c.flows++
+	c.packets += r.Packets
+	c.bytes += r.Bytes
+}
+
+// percentOf 计算"某项字节数占该维度总字节数"的百分比（0~100，保留 1 位小数）。
+// SQL 聚合与内存聚合共用它，保证两条路径给出的占比完全一致。
+func percentOf(bytes, total uint64) float64 {
+	if total == 0 {
+		return 0
+	}
+	return float64(int64(bytes)*1000/int64(total)) / 10
+}
+
+// finalizeAgg 排序、截断并计算占比（占比相对该维度的总字节数）。
+func finalizeAgg(m map[string]*aggCounter, limit int) []AggEntry {
+	var total uint64
+	for _, c := range m {
+		total += c.bytes
+	}
+	list := make([]AggEntry, 0, len(m))
+	for k, c := range m {
+		list = append(list, AggEntry{
+			Key: k, Flows: c.flows, Packets: c.packets, Bytes: c.bytes,
+			Percent: percentOf(c.bytes, total),
+		})
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].Bytes != list[j].Bytes {
+			return list[i].Bytes > list[j].Bytes
+		}
+		return list[i].Key < list[j].Key
+	})
+	if limit > 0 && len(list) > limit {
+		list = list[:limit]
+	}
+	return list
+}
+
+// aggregateRecords 在内存里聚合会话记录：与 SQLite 版的聚合语义保持一致。
+func aggregateRecords(records []FlowRecord, limit int) FlowAggregate {
+	if limit <= 0 {
+		limit = 10
+	}
+	agg := FlowAggregate{TotalFlows: len(records)}
+	ip := map[string]*aggCounter{}
+	proto := map[string]*aggCounter{}
+	port := map[string]*aggCounter{}
+	for _, r := range records {
+		agg.TotalBytes += r.Bytes
+		addAgg(ip, r.SrcIP, r)
+		addAgg(ip, r.DstIP, r)
+		addAgg(proto, strconv.Itoa(int(r.Proto)), r)
+		if r.Proto == 6 || r.Proto == 17 {
+			if r.SrcPort != 0 {
+				addAgg(port, strconv.Itoa(int(r.SrcPort)), r)
+			}
+			if r.DstPort != 0 {
+				addAgg(port, strconv.Itoa(int(r.DstPort)), r)
+			}
+		}
+	}
+	agg.ByIP = finalizeAgg(ip, limit)
+	agg.ByProto = finalizeAgg(proto, limit)
+	agg.ByPort = finalizeAgg(port, limit)
+	return agg
+}
+
+// AggregateFlows 在内存里过滤并聚合（FileStore 没有数据库聚合能力，语义与 SQLite 版一致）。
+func (s *FileStore) AggregateFlows(f SessionFilter, limit int) (FlowAggregate, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	matched := make([]FlowRecord, 0, len(s.flows))
+	for _, r := range s.flows {
+		if !matchFlow(r, f) {
+			continue
+		}
+		matched = append(matched, r)
+	}
+	return aggregateRecords(matched, limit), nil
+}
+
+// matchFlow 判断一条会话是否满足过滤条件（与 SQL 版语义一致：完整 IP 精确匹配、其它前缀匹配）。
+func matchFlow(r FlowRecord, f SessionFilter) bool {
+	if ip := strings.TrimSpace(f.IP); ip != "" {
+		if !matchIP(r.SrcIP, ip) && !matchIP(r.DstIP, ip) {
+			return false
+		}
+	}
+	if f.Proto != 0 && r.Proto != f.Proto {
+		return false
+	}
+	if f.Port != 0 && r.SrcPort != f.Port && r.DstPort != f.Port {
+		return false
+	}
+	if !f.From.IsZero() && r.Start.Before(f.From) {
+		return false
+	}
+	if !f.To.IsZero() && r.Start.After(f.To) {
+		return false
+	}
+	return true
+}
+
+// matchIP 支持"完整 IP 精确匹配"与"前缀匹配"两种写法。
+// 必须与 SQLite 版（flowWhere）保持一致：能解析成地址的输入只做等值比较，
+// 否则 "10.0.0.1" 会在文件后端顺带命中 "10.0.0.10"，两个后端结果就不一样了。
+func matchIP(addr, want string) bool {
+	if addr == "" || want == "" {
+		return false
+	}
+	if addr == want {
+		return true
+	}
+	if _, err := netip.ParseAddr(want); err == nil {
+		return false
+	}
+	return strings.HasPrefix(addr, want)
 }

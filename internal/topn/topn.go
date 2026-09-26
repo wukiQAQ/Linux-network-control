@@ -1,9 +1,10 @@
-// Package topn 把会话记录聚合成排行榜：TOP IP、协议分布、TOP 端口。
-// 纯逻辑、无外部依赖，便于单元测试；API 层只负责取数与返回。
+// Package topn 把存储层的会话聚合结果整理成排行榜：TOP IP、协议分布、TOP 端口。
+//
+// 聚合本身在存储层完成（SQLite 走 SQL 聚合，不再受"只取前 N 条样本"限制），
+// 这里只做展示层映射：协议号 → 可读名称，以及 JSON 结构定义。
 package topn
 
 import (
-	"sort"
 	"strconv"
 
 	"github.com/wukiQAQ/Linux-network-control/internal/storage"
@@ -43,77 +44,34 @@ func ProtoName(p uint8) string {
 	}
 }
 
-type counter struct {
-	flows   int
-	packets uint64
-	bytes   uint64
+// FromAggregate 把存储层的聚合结果转成展示结构（协议维度把 "6" 映射成 "TCP"）。
+func FromAggregate(agg storage.FlowAggregate) Result {
+	return Result{
+		TotalFlows: agg.TotalFlows,
+		TotalBytes: agg.TotalBytes,
+		ByIP:       convert(agg.ByIP, nil),
+		ByProto:    convert(agg.ByProto, protoKeyName),
+		ByPort:     convert(agg.ByPort, nil),
+	}
 }
 
-func add(m map[string]*counter, key string, r storage.FlowRecord) {
-	if key == "" || key == "0" {
-		return
+func convert(entries []storage.AggEntry, rename func(string) string) []Entry {
+	out := make([]Entry, 0, len(entries))
+	for _, e := range entries {
+		key := e.Key
+		if rename != nil {
+			key = rename(key)
+		}
+		out = append(out, Entry{Key: key, Flows: e.Flows, Packets: e.Packets, Bytes: e.Bytes, Percent: e.Percent})
 	}
-	c := m[key]
-	if c == nil {
-		c = &counter{}
-		m[key] = c
-	}
-	c.flows++
-	c.packets += r.Packets
-	c.bytes += r.Bytes
+	return out
 }
 
-// finalize 排序、截断并计算占比。
-func finalize(m map[string]*counter, n int) []Entry {
-	var total uint64
-	for _, c := range m {
-		total += c.bytes
+// protoKeyName 把存储层的协议 key（"6"）转成展示名（"TCP"）；解析失败时原样返回。
+func protoKeyName(key string) string {
+	n, err := strconv.Atoi(key)
+	if err != nil {
+		return key
 	}
-	list := make([]Entry, 0, len(m))
-	for k, c := range m {
-		e := Entry{Key: k, Flows: c.flows, Packets: c.packets, Bytes: c.bytes}
-		if total > 0 {
-			e.Percent = float64(int64(c.bytes)*1000/int64(total)) / 10
-		}
-		list = append(list, e)
-	}
-	sort.Slice(list, func(i, j int) bool {
-		if list[i].Bytes != list[j].Bytes {
-			return list[i].Bytes > list[j].Bytes
-		}
-		return list[i].Key < list[j].Key
-	})
-	if len(list) > n {
-		list = list[:n]
-	}
-	return list
-}
-
-// Aggregate 聚合会话记录：IP 与端口按双向计入（一个会话的两端都会上榜），协议按整条会话计入。
-func Aggregate(records []storage.FlowRecord, n int) Result {
-	if n <= 0 {
-		n = 10
-	}
-	ip := map[string]*counter{}
-	proto := map[string]*counter{}
-	port := map[string]*counter{}
-	res := Result{TotalFlows: len(records)}
-	for _, r := range records {
-		res.TotalBytes += r.Bytes
-		add(ip, r.SrcIP, r)
-		add(ip, r.DstIP, r)
-		add(proto, ProtoName(r.Proto), r)
-		if r.Proto == 6 || r.Proto == 17 {
-			if r.SrcPort != 0 {
-				add(port, strconv.Itoa(int(r.SrcPort)), r)
-			}
-			if r.DstPort != 0 {
-				add(port, strconv.Itoa(int(r.DstPort)), r)
-			}
-		}
-	}
-	res.ByIP = finalize(ip, n)
-	res.ByProto = finalize(proto, n)
-	res.ByPort = finalize(port, n)
-	return res
+	return ProtoName(uint8(n))
 }

@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +44,12 @@ func OpenSQLiteStore(path string, retention time.Duration) (*SQLiteStore, error)
 		return nil, err
 	}
 	if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+		db.Close()
+		return nil, err
+	}
+	// 开启大小写敏感的 LIKE：IP 只有数字/点/冒号，语义不变，
+	// 但能让"前缀 LIKE"用上 idx_flows_src_ip / idx_flows_dst_ip 索引（否则只能全表扫）。
+	if _, err := db.Exec(`PRAGMA case_sensitive_like=ON`); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -158,12 +165,28 @@ func (s *SQLiteStore) QueryMetrics(series string, from, to time.Time) ([]MetricP
 	return out, rows.Err()
 }
 
-func (s *SQLiteStore) QuerySessions(f SessionFilter, limit, offset int) ([]FlowRecord, int, error) {
+// flowWhere 生成会话查询的 WHERE 子句与参数。
+//
+// IP 条件刻意不用 "%x%"：以通配符开头的 LIKE 无法使用索引，只能全表扫描。
+// 这里改为两种都能走索引的写法：
+//   - 完整 IP（能解析成地址）→ 精确等值，配合 SQLite 的 OR 优化同时用上 idx_flows_src_ip / idx_flows_dst_ip；
+//   - 其它（如 "10.0."）→ 前缀区间 [前缀, 前缀上界)，用 >= / < 比较，确定能走索引；
+//     语义与文件后端的 strings.HasPrefix 完全一致，用户输入的 %、_ 只是普通字符。
+func flowWhere(f SessionFilter) (string, []any) {
 	where := []string{"1=1"}
 	args := []any{}
-	if f.IP != "" {
-		where = append(where, "(src_ip LIKE ? OR dst_ip LIKE ?)")
-		args = append(args, "%"+f.IP+"%", "%"+f.IP+"%")
+	if ip := strings.TrimSpace(f.IP); ip != "" {
+		if _, err := netip.ParseAddr(ip); err == nil {
+			where = append(where, "(src_ip = ? OR dst_ip = ?)")
+			args = append(args, ip, ip)
+		} else if hi := prefixUpper(ip); hi != "" {
+			where = append(where, "((src_ip >= ? AND src_ip < ?) OR (dst_ip >= ? AND dst_ip < ?))")
+			args = append(args, ip, hi, ip, hi)
+		} else {
+			// 前缀已到字节上界（极不可能）：退化为 >= 前缀
+			where = append(where, "(src_ip >= ? OR dst_ip >= ?)")
+			args = append(args, ip, ip)
+		}
 	}
 	if f.Proto != 0 {
 		where = append(where, "proto = ?")
@@ -181,7 +204,111 @@ func (s *SQLiteStore) QuerySessions(f SessionFilter, limit, offset int) ([]FlowR
 		where = append(where, "start <= ?")
 		args = append(args, f.To.UnixNano())
 	}
-	cond := strings.Join(where, " AND ")
+	return strings.Join(where, " AND "), args
+}
+
+// prefixUpper 返回"前缀区间"的上界：把最后一个字节 +1（如 "10.0." → "10.0/"）。
+// 返回空串表示没有上界（整串都是 0xFF），调用方退化为 >= 前缀。
+func prefixUpper(s string) string {
+	b := []byte(s)
+	for i := len(b) - 1; i >= 0; i-- {
+		if b[i] < 0xff {
+			b[i]++
+			return string(b[:i+1])
+		}
+	}
+	return ""
+}
+
+// AggregateFlows 在数据库内聚合会话记录：不受"只取前 N 条样本"的限制，占比与旧的内存聚合公式一致。
+func (s *SQLiteStore) AggregateFlows(f SessionFilter, limit int) (FlowAggregate, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	cond, args := flowWhere(f)
+	var agg FlowAggregate
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*), COALESCE(SUM(bytes), 0) FROM flows WHERE `+cond, args...,
+	).Scan(&agg.TotalFlows, &agg.TotalBytes); err != nil {
+		return FlowAggregate{}, err
+	}
+
+	// IP：一条会话的两端各自上榜（与旧行为一致）
+	ipUnion := `SELECT src_ip AS key, packets, bytes FROM flows WHERE ` + cond +
+		` AND src_ip <> '' AND src_ip <> '0' UNION ALL ` +
+		`SELECT dst_ip AS key, packets, bytes FROM flows WHERE ` + cond +
+		` AND dst_ip <> '' AND dst_ip <> '0'`
+	byIP, err := s.aggUnion(ipUnion, args, limit)
+	if err != nil {
+		return FlowAggregate{}, err
+	}
+	agg.ByIP = byIP
+
+	// 协议：按整条会话计入，维度总量就是总字节数
+	proto, err := s.aggGrouped(cond, args, `CAST(proto AS TEXT)`, agg.TotalBytes, limit)
+	if err != nil {
+		return FlowAggregate{}, err
+	}
+	agg.ByProto = proto
+
+	// 端口：只统计 TCP/UDP 且非 0 的端口，双向计入
+	portUnion := `SELECT CAST(src_port AS TEXT) AS key, packets, bytes FROM flows WHERE ` + cond +
+		` AND proto IN (6, 17) AND src_port <> 0 UNION ALL ` +
+		`SELECT CAST(dst_port AS TEXT) AS key, packets, bytes FROM flows WHERE ` + cond +
+		` AND proto IN (6, 17) AND dst_port <> 0`
+	byPort, err := s.aggUnion(portUnion, args, limit)
+	if err != nil {
+		return FlowAggregate{}, err
+	}
+	agg.ByPort = byPort
+	return agg, nil
+}
+
+// aggUnion 聚合"双向计入"的维度（IP / 端口）：先算维度总字节，再取前 limit 项。
+// inner 里 WHERE 出现两次，因此参数也要重复一遍。
+func (s *SQLiteStore) aggUnion(inner string, args []any, limit int) ([]AggEntry, error) {
+	unionArgs := append(append([]any{}, args...), args...)
+	var total uint64
+	if err := s.db.QueryRow(`SELECT COALESCE(SUM(bytes), 0) FROM (`+inner+`)`, unionArgs...).Scan(&total); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(
+		`SELECT key, COUNT(*), COALESCE(SUM(packets), 0), COALESCE(SUM(bytes), 0) FROM (`+inner+`)`+
+			` GROUP BY key ORDER BY SUM(bytes) DESC, key LIMIT ?`, append(append([]any{}, unionArgs...), limit)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAggEntries(rows, total)
+}
+
+// aggGrouped 聚合普通维度（协议）。
+func (s *SQLiteStore) aggGrouped(cond string, args []any, expr string, total uint64, limit int) ([]AggEntry, error) {
+	rows, err := s.db.Query(
+		`SELECT `+expr+` AS key, COUNT(*), COALESCE(SUM(packets), 0), COALESCE(SUM(bytes), 0) FROM flows WHERE `+cond+
+			` GROUP BY key ORDER BY SUM(bytes) DESC, key LIMIT ?`, append(append([]any{}, args...), limit)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAggEntries(rows, total)
+}
+
+func scanAggEntries(rows *sql.Rows, total uint64) ([]AggEntry, error) {
+	out := make([]AggEntry, 0, 16)
+	for rows.Next() {
+		var e AggEntry
+		if err := rows.Scan(&e.Key, &e.Flows, &e.Packets, &e.Bytes); err != nil {
+			return nil, err
+		}
+		e.Percent = percentOf(e.Bytes, total)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) QuerySessions(f SessionFilter, limit, offset int) ([]FlowRecord, int, error) {
+	cond, args := flowWhere(f)
 
 	var total int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM flows WHERE `+cond, args...).Scan(&total); err != nil {
