@@ -111,6 +111,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/stream", s.handleStream)
 	mux.HandleFunc("GET /api/v1/topn", s.handleTopN)
 	mux.HandleFunc("GET /api/v1/plugins", s.handlePlugins)
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.HandleFunc("GET /api/v1/system/upgrade", s.handleUpgradeStatus)
 	mux.HandleFunc("POST /api/v1/system/upgrade", s.handleUpgrade)
 	mux.Handle("/", http.FileServerFS(s.ui))
@@ -121,13 +122,16 @@ func (s *Server) Handler() http.Handler {
 	return h
 }
 
-// requireToken 对 /api/ 前缀请求校验 Authorization: Bearer <token>；
+// requireToken 对 /api/ 前缀请求与 /metrics 校验 Authorization: Bearer <token>；
 // 静态页面不鉴权（不含敏感数据），令牌为空时整个中间件被跳过。
+// /metrics 走同一套令牌（Prometheus 侧用 bearer_token_file 配置即可抓取）。
 // 使用 subtle.ConstantTimeCompare 避免时序侧信道。
 func requireToken(token string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// /api/v1/stream 自行校验令牌（浏览器 EventSource 不能设置请求头）
-		if strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api/v1/stream" {
+		needAuth := r.URL.Path == "/metrics" ||
+			(strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api/v1/stream")
+		if needAuth {
 			const prefix = "Bearer "
 			auth := r.Header.Get("Authorization")
 			if !strings.HasPrefix(auth, prefix) {
