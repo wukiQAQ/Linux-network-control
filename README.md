@@ -12,14 +12,14 @@
 
 ## 项目状态
 
-- **当前阶段**：V0.17.0（采集多队列 + 安全自升级 + 客户端一键升级入口）
+- **当前阶段**：V0.22.0（性能与扩展：多队列 / CPU 绑定 / 采集过滤与内核剪枝 / Prometheus 指标导出）
 - **技术方向**：Go 语言采集端（AF_PACKET / libpcap）+ Rust/Tauri + Vue 3 桌面客户端（MeTD）
 - **架构分层**：采集 → 解析 → 聚合 → 存储 → API → 展示（网页 / 桌面客户端）→ 告警
 - **存储**：SQLite（默认，纯 Go 驱动 modernc.org/sqlite），可切换 JSONL（file）
 - **数据源**：synthetic 合成 / pcap 回放 / Linux AF_PACKET 真实抓包
 - **远程访问**：Linux 端可选 Bearer Token 鉴权；Windows 客户端跨 IP 连接
 - **版本号规则**：小更新只加最后一位（`0.14.0` → `0.14.1`），成体系的一批功能才升次版本，详见《版本记录》
-- **当前版本**：采集端 0.17.0、客户端 0.12.4
+- **当前版本**：采集端 0.22.0、客户端 0.12.8
 
 ## 如何使用（快速上手）
 
@@ -51,7 +51,7 @@ internal/parser/         # 协议解析：以太网 / IPv4 / TCP / UDP / ICMP
 internal/flow/           # 会话流表：5 元组双向归并、30s/5min 双超时
 internal/aggregator/     # 秒级聚合：bps / pps / 连接数 / 丢包计数
 internal/storage/        # Backend 接口 + SQLite 实现（默认）+ JSONL(file)
-internal/api/            # REST API /api/v1：now/history/sessions/health（可选 Bearer 鉴权）
+internal/api/            # REST API /api/v1（可选 Bearer 鉴权）+ GET /metrics（Prometheus 文本格式）
 internal/webui/          # 内嵌网页仪表盘（go:embed）
 internal/capture/dumper.go  # 按需抓包：把原始报文流式写为 pcap（供 Wireshark 分析）
 internal/buildinfo/      # 版本与能力清单（客户端据此判断服务端是否支持某项能力）
@@ -63,7 +63,7 @@ client/                  # Windows 桌面客户端 MeTD（Tauri 2 + Vue 3 + ECha
   src-tauri/             #   Rust 侧：reqwest 远程访问、令牌持有、命令层
   src/profiles.js        #   账号管理纯逻辑：连过的 IP 自动记入、按地址去重、最近连接时间
   src/chartzoom.js       #   历史曲线缩放区间计算（放大 / 缩小 / 重置）
-  test/                  #   前端单元测试（node --test，106 个用例）
+  test/                  #   前端单元测试（node --test，124 个用例）
 deploy/                  # 部署脚本：Linux 一键更新/回滚 + Windows 一键上传
 docs/                    # 产品设计 / 技术方案 / 系统设计 / 源码讲解 / 版本记录
 demo/index.html          # 纯前端界面演示（模拟数据，评估交互用）
@@ -85,7 +85,7 @@ demo/index.html          # 纯前端界面演示（模拟数据，评估交互�
 - 多队列 CPU 绑定：`[capture] cpu_pin = true` 时把各读循环线程绑到不同 CPU（读不到 CPU 列表自动跳过）
 - 界面插件框架：`[plugins] dir` 下发声明式面板（kpi / 表格 / 说明，无代码执行），客户端「🧩 插件」按能力门控展示并可逐个启停
 - 安全版自升级：白名单 URL + SHA256 + ELF 校验 + 原子替换 + 备份回滚（默认关闭）
-- 可选 Bearer Token 鉴权：`[api] token = "..."` 后，`/api/` 请求需携带 `Authorization: Bearer <token>`
+- 可选 Bearer Token 鉴权：`[api] token = "..."` 后，`/api/` 与 `/metrics` 请求需携带 `Authorization: Bearer <token>`
 
 ### Windows 桌面客户端 MeTD（client/）
 - 连接管理：保存多组服务器配置（地址 + 令牌），本地持久化
