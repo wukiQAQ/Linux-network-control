@@ -152,9 +152,15 @@ func main() {
 
 // applyCLIOverrides 用命令行参数覆盖配置文件中的对应项：
 // 客户端需要直接拉起本机 pcap 回放，而不必先落一份临时配置文件。
+//
+// 注意：给出 -replay-file 时必须同时把数据源切到 replay。
+// 早期实现只覆盖 capture.replay_file，若配置里仍是默认的 source="synthetic"，
+// 程序会去造包空跑、把 -replay-file 完全忽略，而且不报任何错——用户只会看到
+// "跑起来了但数据不是我的 pcap"，极难自查。
 func applyCLIOverrides(cfg *config.Config, replayFile string, offline bool) {
 	if replayFile != "" {
 		cfg.ReplayFile = replayFile
+		cfg.Source = "replay"
 	}
 	if offline {
 		cfg.Offline = true
