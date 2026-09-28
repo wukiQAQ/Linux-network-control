@@ -94,6 +94,11 @@ func Default() *Config {
 }
 
 // Load 从 TOML 文件加载配置，解析失败时返回错误。
+//
+// 注意：这里会剥掉文件开头的 UTF-8 BOM。Windows 上很多工具（例如 PowerShell 5.1 的
+// `Set-Content -Encoding utf8`、记事本「另存为 UTF-8」）会写出带 BOM 的文件，
+// 而 strings.TrimSpace 不剥 U+FEFF，会让首行变成 "\uFEFF[core]"、匹配不上 section 头，
+// 于是整个 [core] 段被静默忽略（表现为「部署成功了但配置没生效」，非常难查）。
 func Load(path string) (*Config, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -104,8 +109,14 @@ func Load(path string) (*Config, error) {
 	values := map[string]string{}
 	section := ""
 	sc := bufio.NewScanner(f)
+	first := true
 	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+		line := sc.Text()
+		if first {
+			line = strings.TrimPrefix(line, "\uFEFF")
+			first = false
+		}
+		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}

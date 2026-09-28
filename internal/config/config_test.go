@@ -20,6 +20,35 @@ func writeTemp(t *testing.T, content string) string {
 	return p
 }
 
+// 回归代码审查 M13：带 UTF-8 BOM 的配置文件不得让首段（[core]）被静默忽略。
+// Windows 上 PowerShell 5.1 的 `Set-Content -Encoding utf8` 与记事本「另存为 UTF-8」
+// 都会写出 BOM；strings.TrimSpace 不剥 U+FEFF，修复前整个 [core] 段会失效。
+func TestLoadStripsUTF8BOM(t *testing.T) {
+	p := writeTemp(t, "\uFEFF[core]\n"+
+		`machine_id = "bom-host"`+"\n"+
+		`source = "replay"`+"\n"+
+		`tick_ms = 250`+"\n"+
+		"\n"+
+		"[capture]\n"+
+		`replay_file = "bom.pcap"`+"\n")
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load 带 BOM 配置失败: %v", err)
+	}
+	if cfg.MachineID != "bom-host" {
+		t.Fatalf("BOM 导致 [core] 段被忽略: MachineID=%q", cfg.MachineID)
+	}
+	if cfg.Source != "replay" {
+		t.Fatalf("BOM 导致 core.source 失效: Source=%q", cfg.Source)
+	}
+	if cfg.Tick != 250*time.Millisecond {
+		t.Fatalf("BOM 导致 core.tick_ms 失效: Tick=%v", cfg.Tick)
+	}
+	if cfg.ReplayFile != "bom.pcap" {
+		t.Fatalf("ReplayFile=%q", cfg.ReplayFile)
+	}
+}
+
 func TestLoad(t *testing.T) {
 	p := writeTemp(t, `
 [core]

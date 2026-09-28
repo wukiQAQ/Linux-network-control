@@ -1,5 +1,7 @@
 # MeTD netmon 采集端示例配置（复制为 config.toml 后按需修改）
 # 说明：解析器只支持 [section] + key = value 的 TOML 子集，未知字段会被忽略。
+# 编码：请保存为 **不带 BOM 的 UTF-8**。带 BOM 时解析器会剥掉首行的 U+FEFF（已兼容），
+#       但其它工具按行处理时仍可能出问题，因此无 BOM 是更稳妥的选择。
 
 # 命令行覆盖（优先级高于本文件）：
 #   -config <path>         指定配置文件（默认 config.toml）
