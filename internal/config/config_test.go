@@ -176,6 +176,41 @@ func TestPluginConfigParsing(t *testing.T) {
 	}
 }
 
+// TestOfflineConfigParsing 校验 core.offline 的解析与默认值：
+// 离线模式必须显式开启，默认保持在线（live）语义。
+func TestOfflineConfigParsing(t *testing.T) {
+	p := writeTemp(t, `
+[core]
+source = "replay"
+offline = true
+
+[capture]
+replay_file = "sample.pcap"
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Offline {
+		t.Fatal("core.offline = true 未解析")
+	}
+	if cfg.Source != "replay" || cfg.ReplayFile != "sample.pcap" {
+		t.Fatalf("回放配置异常: source=%q replay_file=%q", cfg.Source, cfg.ReplayFile)
+	}
+	if d := Default(); d.Offline {
+		t.Error("默认应关闭离线模式（保持 live/在线语义）")
+	}
+	// 显式写 false 时同样保持在线
+	p2 := writeTemp(t, "[core]\noffline = false\n")
+	cfg2, err := Load(p2)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg2.Offline {
+		t.Error("core.offline = false 应保持在线语义")
+	}
+}
+
 // TestCaptureCPUPinParsing 校验 capture.readers 与 capture.cpu_pin 的解析。
 func TestCaptureCPUPinParsing(t *testing.T) {
 	p := writeTemp(t, "[capture]\nreaders = 4\ncpu_pin = true\n")

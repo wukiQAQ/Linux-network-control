@@ -48,6 +48,7 @@ type Config struct {
 	Iface      string        // 监控网卡（live 模式使用）
 	Filter     string        // 采集过滤表达式（pcap 常用子集，用户态匹配；空表示不过滤）
 	ReplayFile string        // pcap 回放文件路径
+	Offline    bool          // 离线模式：用报文时间戳驱动聚合与过期，回放结束后不退出进程（默认 false）
 	Pps        int           // synthetic 数据源每秒产生包数
 	Readers    int           // live 抓包并行队列数（1~8，默认 1）
 	CPUPin     bool          // 多队列时是否把读循环绑定到不同 CPU（默认 false）
@@ -141,6 +142,11 @@ func (c *Config) apply(v map[string]string) {
 	}
 	if s, ok := v["core.source"]; ok {
 		c.Source = s
+	}
+	if s, ok := v["core.offline"]; ok {
+		if b, err := strconv.ParseBool(s); err == nil {
+			c.Offline = b
+		}
 	}
 	if s, ok := v["capture.iface"]; ok {
 		c.Iface = s

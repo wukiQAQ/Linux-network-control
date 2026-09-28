@@ -32,6 +32,8 @@ import (
 
 func main() {
 	configPath := flag.String("config", "config.toml", "配置文件路径")
+	replayFile := flag.String("replay-file", "", "覆盖 capture.replay_file：本机回放的 pcap 文件路径")
+	offline := flag.Bool("offline", false, "覆盖 core.offline：离线分析模式（报文时间戳驱动聚合，回放结束不退出）")
 	flag.Parse()
 
 	cfg, err := config.Load(*configPath)
@@ -41,8 +43,9 @@ func main() {
 	} else if err != nil {
 		log.Fatalf("[config] 配置加载失败: %v", err)
 	}
-	log.Printf("[config] machine=%s source=%s iface=%s tick=%v listen=%s",
-		cfg.MachineID, cfg.Source, cfg.Iface, cfg.Tick, cfg.Listen)
+	applyCLIOverrides(cfg, *replayFile, *offline)
+	log.Printf("[config] machine=%s source=%s iface=%s tick=%v offline=%v listen=%s",
+		cfg.MachineID, cfg.Source, cfg.Iface, cfg.Tick, cfg.Offline, cfg.Listen)
 
 	src, err := buildSource(cfg)
 	if err != nil {
@@ -145,6 +148,17 @@ func main() {
 	defer cancel()
 	_ = httpSrv.Shutdown(shutdownCtx)
 	log.Printf("[main] 已退出")
+}
+
+// applyCLIOverrides 用命令行参数覆盖配置文件中的对应项：
+// 客户端需要直接拉起本机 pcap 回放，而不必先落一份临时配置文件。
+func applyCLIOverrides(cfg *config.Config, replayFile string, offline bool) {
+	if replayFile != "" {
+		cfg.ReplayFile = replayFile
+	}
+	if offline {
+		cfg.Offline = true
+	}
 }
 
 // buildAlertEngine 按配置构建告警引擎；未启用或无有效阈值规则时返回 nil。

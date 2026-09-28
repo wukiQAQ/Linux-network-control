@@ -5,6 +5,8 @@ package app
 
 import (
 	"context"
+	"errors"
+	"io"
 	"log"
 	"time"
 
@@ -26,11 +28,14 @@ type App struct {
 	Store  storage.Backend
 	Alerts *alert.Engine   // 可选告警引擎，nil 表示不启用
 	Dumper *capture.Dumper // 可选按需抓包器，nil 表示不导出 pcap
-	lastP  time.Time
+	// Offline 为真时走离线回放路径：用报文时间戳（而非墙钟）驱动聚合与过期，
+	// 且数据源耗尽后不退出进程，直到 ctx 取消。默认由 cfg.Offline 初始化。
+	Offline bool
+	lastP   time.Time
 }
 
 func New(cfg *config.Config, src capture.Source, table *flow.Table, agg *aggregator.Agg, store storage.Backend) *App {
-	return &App{Cfg: cfg, Src: src, Table: table, Agg: agg, Store: store}
+	return &App{Cfg: cfg, Src: src, Table: table, Agg: agg, Store: store, Offline: cfg.Offline}
 }
 
 // HandlePacket 处理一个原始报文：解析失败计为一次丢弃，成功则进入流表与聚合。
@@ -136,11 +141,119 @@ func (a *App) persistMetrics(s aggregator.Sample) {
 	}
 }
 
-// Run 启动采集循环与定时聚合，直到 ctx 取消。
+// Run 启动采集循环与聚合调度，直到 ctx 取消。
+// 在线模式（Offline=false）用墙钟 ticker 驱动；离线回放模式用报文时间戳驱动数据时钟，
+// 且数据源耗尽后进程不退出（见 runOffline）。
 func (a *App) Run(ctx context.Context) error {
+	if a.Offline {
+		return a.runOffline(ctx)
+	}
+	return a.runOnline(ctx)
+}
+
+// offlineClock 是离线回放专用的"数据时钟"：时间基准来自报文时间戳（数据时间），
+// 而不是墙钟。这样流表过期、聚合采样、落盘时间戳都落在 pcap 的时间区间内，
+// 历史回放（几毫秒就跑完）也能产生完整的秒级曲线。
+type offlineClock struct {
+	firstPkt time.Time // 首个报文时间戳
+	lastTick time.Time // 上一次 tick 使用的数据时间；零值表示尚未建立基线
+	lastPkt  time.Time // 已读到的最新报文时间戳
+}
+
+// advance 用新报文时间戳 pkt 推进数据时钟：
+// ok=false 表示距上次 tick 的数据时间前进不足 tick，本轮不聚合；
+// ok=true 时返回本次 tick 应使用的数据时间（对齐到 lastTick+tick 的周期边界，且不越过 pkt）。
+func (c *offlineClock) advance(pkt time.Time, tick time.Duration) (time.Time, bool) {
+	if pkt.IsZero() || tick <= 0 {
+		return time.Time{}, false
+	}
+	if c.firstPkt.IsZero() {
+		c.firstPkt = pkt
+	}
+	c.lastPkt = pkt
+	if c.lastTick.IsZero() {
+		c.lastTick = pkt // 首帧只建立基线，不产生一条空采样
+		return time.Time{}, false
+	}
+	if pkt.Sub(c.lastTick) < tick {
+		return time.Time{}, false
+	}
+	now := c.lastTick.Add(tick)
+	if now.After(pkt) {
+		now = pkt
+	}
+	c.lastTick = now
+	return now, true
+}
+
+// final 返回数据源耗尽时的收尾 tick 时间（即最后一个报文的数据时间），
+// 用于把最后一个采样与残留流落盘；一个报文都没有时 ok=false。
+func (c *offlineClock) final() (time.Time, bool) {
+	if c.lastPkt.IsZero() {
+		return time.Time{}, false
+	}
+	if c.lastPkt.After(c.lastTick) {
+		return c.lastPkt, true
+	}
+	return c.lastTick, true
+}
+
+// runOffline 离线回放循环：逐包推进数据时钟并按需聚合，源耗尽后补一次收尾 tick，
+// 把残留会话落盘，然后阻塞等待 ctx 取消——进程保持存活，用户可继续查询已落盘的结果。
+func (a *App) runOffline(ctx context.Context) error {
+	clock := &offlineClock{}
+	packets := 0
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+		p, err := a.Src.Next(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			if !errors.Is(err, io.EOF) {
+				log.Printf("[app] 离线回放读取中断: %v", err)
+			}
+			break
+		}
+		if now, ok := clock.advance(p.Ts, a.Cfg.Tick); ok {
+			a.TickOnce(now)
+		}
+		a.HandlePacket(p)
+		packets++
+	}
+	// 收尾：写出最后一个采样（含末尾未聚合的报文）
+	if now, ok := clock.final(); ok {
+		a.TickOnce(now)
+	}
+	// 数据时间刚结束、尚未达到空闲超时的活跃会话也一并落盘，保证离线结果完整
+	rest := a.flushRemaining()
+	log.Printf("[app] 离线回放完成: 报文=%d 残留会话落盘=%d 数据时间=[%s, %s]；HTTP 服务继续可用，等待退出信号",
+		packets, rest, clock.firstPkt.Format(time.RFC3339), clock.lastPkt.Format(time.RFC3339))
+	<-ctx.Done()
+	return nil
+}
+
+// flushRemaining 把流表中尚未过期的会话强制落盘，返回落盘条数。
+// 仅在离线回放结束时调用（此后不再 tick，不会重复落盘）。
+func (a *App) flushRemaining() int {
+	flows := a.Table.Snapshot()
+	for _, f := range flows {
+		if err := a.Store.AppendFlow(a.toRecord(f)); err != nil {
+			log.Printf("[app] 流记录落盘失败: %v", err)
+		}
+	}
+	return len(flows)
+}
+
+// runOnline 在线采集循环：墙钟 ticker 驱动聚合，数据源结束即排空返回。
+// 数据源意外报错（非 EOF / 非 ctx 取消）时把错误上抛给 main。
+func (a *App) runOnline(ctx context.Context) error {
 	ticker := time.NewTicker(a.Cfg.Tick)
 	defer ticker.Stop()
 	pkts := make(chan *capture.Packet, 1024)
+	srcErr := make(chan error, 1)
 	go func() {
 		defer close(pkts)
 		for {
@@ -148,6 +261,12 @@ func (a *App) Run(ctx context.Context) error {
 			if err != nil {
 				if ctx.Err() == nil {
 					log.Printf("[app] 采集源结束: %v", err)
+					if !errors.Is(err, io.EOF) {
+						select {
+						case srcErr <- err:
+						default:
+						}
+					}
 				}
 				return
 			}
@@ -169,7 +288,12 @@ func (a *App) Run(ctx context.Context) error {
 					a.HandlePacket(p)
 				}
 				log.Printf("[app] 数据源已关闭，管道排空完毕")
-				return nil
+				select {
+				case err := <-srcErr:
+					return err
+				default:
+					return nil
+				}
 			}
 			a.HandlePacket(p)
 		case now := <-ticker.C:
