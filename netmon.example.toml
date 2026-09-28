@@ -1,10 +1,15 @@
 # MeTD netmon 采集端示例配置（复制为 config.toml 后按需修改）
 # 说明：解析器只支持 [section] + key = value 的 TOML 子集，未知字段会被忽略。
 
+# 命令行覆盖（优先级高于本文件）：
+#   -config <path>         指定配置文件（默认 config.toml）
+#   -replay-file <path>    覆盖 capture.replay_file（等价于 source=replay + replay_file）
+#   -offline               开启离线回放：按 pcap 报文时间推进聚合，回放结束后进程继续存活、HTTP 服务可用
 [core]
 machine_id  = "host-1"        # 机器标识，多机对比时用于区分数据来源
 source      = "live"          # 数据源：live（Linux 抓包）| synthetic（造包演示）| replay（回放 pcap）
 tick_ms     = 1000            # 指标聚合周期（毫秒）
+offline     = false           # 离线回放模式：时间基准取 pcap 报文时间戳而非墙钟，回放完成后不退出（source=replay 时才有意义）
 
 [capture]
 iface       = "eth0"          # 监控网卡（live 模式）
