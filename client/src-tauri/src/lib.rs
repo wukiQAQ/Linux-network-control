@@ -255,6 +255,48 @@ async fn probe_hosts(state: State<'_, ApiState>, hosts: Vec<Value>) -> Result<Va
     Ok(Value::Array(out))
 }
 
+// 不允许用系统默认程序打开的可执行 / 脚本类扩展名。
+// 服务端可以决定下载文件的文件名，而 `cmd /C start` 会把它交给系统关联程序（可能是执行），
+// 因此这里做一道黑名单；名单与前端 client/src/files.js 的 DANGEROUS_EXTS 逐项保持一致
+// （改一处就要改另一处，client/test/files.test.mjs 只覆盖前端那份）。
+const BLOCKED_EXTS: [&str; 24] = [
+    "exe", "bat", "cmd", "com", "scr", "pif", "msi", "msp", "cpl", "ps1", "psm1", "vbs", "vbe",
+    "js", "jse", "wsf", "wsh", "hta", "lnk", "url", "reg", "jar", "chm", "inf",
+];
+
+// 取小写扩展名（不含点）。按「最后一个点」取，因此 report.pdf.exe 会得到 exe。
+fn lower_ext(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    match base.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => ext.to_ascii_lowercase(),
+        _ => String::new(),
+    }
+}
+
+fn is_blocked_ext(name: &str) -> bool {
+    let ext = lower_ext(name);
+    !ext.is_empty() && BLOCKED_EXTS.contains(&ext.as_str())
+}
+
+// 找一个不覆盖已有文件的落盘路径：服务端可以在响应头里重复给出同一个文件名，
+// 若直接覆盖，攻击者就能把「用户以前下载过、看起来可信」的文件悄悄换成别的内容。
+fn free_dest_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let first = dir.join(name);
+    if !first.exists() {
+        return first;
+    }
+    for i in 1..1000 {
+        let cand = dir.join(format!("{i}-{name}"));
+        if !cand.exists() {
+            return cand;
+        }
+    }
+    first
+}
+
+// 单次下载上限（与服务端 internal/api/files.go 的 maxDownloadBytes 对齐）。
+const MAX_DOWNLOAD_BYTES: u64 = 64 << 20;
+
 #[tauri::command]
 async fn save_server_file(state: State<'_, ApiState>, path: String, name: String) -> Result<String, String> {
     let conn = {
@@ -274,24 +316,56 @@ async fn save_server_file(state: State<'_, ApiState>, path: String, name: String
     if !resp.status().is_success() {
         return Err(format!("下载失败: HTTP {}", resp.status().as_u16()));
     }
+    // 超限直接拒绝下载，避免异常/恶意服务端把内存或磁盘打满。
+    if let Some(len) = resp.content_length() {
+        if len > MAX_DOWNLOAD_BYTES {
+            return Err(format!(
+                "文件过大（{} MB），上限 {} MB",
+                len >> 20,
+                MAX_DOWNLOAD_BYTES >> 20
+            ));
+        }
+    }
     let bytes = resp.bytes().await.map_err(|e| format!("读取响应失败: {e}"))?;
+    if bytes.len() as u64 > MAX_DOWNLOAD_BYTES {
+        return Err(format!(
+            "文件过大（{} MB），上限 {} MB",
+            bytes.len() >> 20,
+            MAX_DOWNLOAD_BYTES >> 20
+        ));
+    }
     let dir = std::env::temp_dir().join("MeTD-files");
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
     let safe: String = name
         .chars()
         .map(|c| if c.is_alphanumeric() || "._-".contains(c) { c } else { '_' })
         .collect();
-    let dest = dir.join(if safe.is_empty() { "download.bin".to_string() } else { safe });
+    let safe = if safe.is_empty() { "download.bin".to_string() } else { safe };
+    let dest = free_dest_path(&dir, &safe);
     std::fs::write(&dest, &bytes).map_err(|e| format!("保存文件失败: {e}"))?;
     log_line(&format!("save_server_file {} bytes -> {}", bytes.len(), dest.display()));
     Ok(dest.to_string_lossy().to_string())
 }
 
 // 用系统默认程序打开本地文件。
+//
+// 安全约束：可执行 / 脚本类扩展名一律拒绝——本命令的实现是 `cmd /C start`，
+// 等于把文件交给系统关联程序（可能直接执行）。调用方（下载完自动打开）曾经让它成为
+// 「点一次下载 = 执行服务端指定的文件」的代码执行链，因此这里必须自己拒。
 #[tauri::command]
 fn open_local_file(path: String) -> Result<String, String> {
     if !std::path::Path::new(&path).exists() {
         return Err("文件不存在".to_string());
+    }
+    let name = std::path::Path::new(&path)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if is_blocked_ext(&name) {
+        return Err(format!(
+            "为安全起见不打开可执行/脚本类文件（.{}）：{path}",
+            lower_ext(&name)
+        ));
     }
     if std::process::Command::new("cmd").args(["/C", "start", "", path.as_str()]).spawn().is_ok() {
         return Ok(format!("已用默认程序打开：{path}"));

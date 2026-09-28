@@ -221,6 +221,14 @@
             </button>
             <span class="muted small">{{ f.is_dir ? "-" : fileSizeText(f.size) }}</span>
             <button v-if="!f.is_dir" class="btn small" type="button" @click="downloadFile(f)">下载</button>
+            <button
+              v-if="!f.is_dir && downloadedFiles[f.path]"
+              class="btn small"
+              type="button"
+              @click="openDownloaded(f)"
+            >
+              打开
+            </button>
           </div>
           <div v-if="!fileEntries.length && !fileLoading && !fileError" class="muted empty">空目录</div>
         </div>
@@ -562,7 +570,7 @@ import {
   previewCommands,
   validateActionParams,
 } from "./actions.js";
-import { entryIcon, fileSizeText, joinPath, parentPath, sortEntries } from "./files.js";
+import { canOpenLocalFile, entryIcon, fileExt, fileSizeText, joinPath, parentPath, sortEntries } from "./files.js";
 import { featureBadges, fleetSummary, hostMetrics, hostStatus, hostVersion, sortHosts } from "./hosts.js";
 import { TOPN_RANGES, barWidth, entryLabel, entrySummary, panelTitle } from "./topn.js";
 import { LIVE_MAX_POINTS, mergeLiveSample } from "./livechart.js";
@@ -847,6 +855,9 @@ const filePath = ref("/var/log");
 const fileEntries = ref([]);
 const fileLoading = ref(false);
 const fileError = ref("");
+// 服务端文件路径 -> 本机已保存路径。只有下载过的文件才出现「打开」按钮，
+// 且**下载不再自动打开**（见 openDownloaded 的说明）。
+const downloadedFiles = ref({});
 const parentPathOf = (p) => parentPath(p);
 
 async function loadFiles() {
@@ -888,18 +899,44 @@ async function downloadFile(f) {
       60000,
       "下载文件",
     );
-    setBanner("ok", "已保存到本机：" + saved);
+    downloadedFiles.value = { ...downloadedFiles.value, [f.path]: saved };
+    setBanner("ok", "已保存到本机：" + saved + (canOpenLocalFile(f.name) ? "（点「打开」查看）" : "（该类型不提供「打开」）"));
     pushLog("已下载到本机：" + saved);
-    try {
-      await openLocalFile(saved);
-    } catch {
-      // 打不开就忽略，路径已在界面与日志里
-    }
   } catch (e) {
     const reason = errText(e);
     setBanner("err", "下载失败：" + reason);
     pushLog("下载失败：" + reason);
   }
+}
+
+// 打开已下载的文件：必须由用户显式点击，且可执行类扩展名一律拒绝。
+//
+// 这里刻意**不再下载完就自动调用 openLocalFile**：服务端决定文件名、扩展名会被完整保留，
+// 而 openLocalFile 走 `cmd /C start`（交给系统默认程序 = 可能直接执行）。自动打开意味着
+// 一台被伪冒/被攻陷的采集端只要把文件名起成 report.pdf.exe，用户点一次「下载」就完成代码执行。
+function openDownloaded(f) {
+  const saved = downloadedFiles.value[f.path];
+  if (!saved) return;
+  const ext = fileExt(f.name);
+  if (!canOpenLocalFile(f.name)) {
+    const reason = "为安全起见不打开可执行/脚本类文件（." + (ext || "?") + "）：" + saved;
+    setBanner("err", reason);
+    pushLog("已拒绝打开：" + saved);
+    return;
+  }
+  if (!window.confirm("用系统默认程序打开本机文件？\n" + saved + "\n\n请确认这是你期望打开的文件。")) {
+    return;
+  }
+  openLocalFile(saved)
+    .then((msg) => {
+      setBanner("ok", msg);
+      pushLog(msg);
+    })
+    .catch((e) => {
+      const reason = errText(e);
+      setBanner("err", "打开失败：" + reason);
+      pushLog("打开失败：" + reason);
+    });
 }
 const actionPreview = computed(() => previewCommands(actionDialog.action, actionDialog.params).join("\n"));
 // 连接取消令牌：取消后本次连接流程的所有后续结果都会被忽略
@@ -1156,6 +1193,7 @@ async function switchTab(id) {
   const t = activeTab();
   applyTabSnapshot(t);
   stopTimers();
+  teardownStream();
   if (t.base) {
     pushLog(`切换到 ${t.title}（${t.base}），正在重连恢复数据…`);
     await connect();
@@ -1237,6 +1275,11 @@ function withTimeout(promise, ms, label) {
 
 async function connect() {
   pushLog("点击连接");
+  // 先无条件停掉旧流：setupStream() 开头是 `if (streamStarted.value) return`，
+  // 若旧流还在跑（换服务器 / 换标签页 / 重连），Rust 侧那条无限 loop 任务会继续持有
+  // 上一个 base+token 把它的 metd-snapshot 写进当前界面 —— 用户会看到「B 的界面 + A 的实时数据」，
+  // 而且 A 的令牌还在 3 秒退避下被反复重连。
+  teardownStream();
   const norm = normalizeBaseUrl(form.base);
   if (!norm.ok) {
     setBanner("err", norm.error);
@@ -1597,6 +1640,9 @@ async function refreshNow() {
       pushLog("连接中断：" + reason);
       connected.value = false;
       stopTimers();
+      // 轮询都连续失败 4 次了，旧流也必须停：否则它会在后台无限重连，
+      // 后面的 connect() 又会因为 streamStarted 仍为 true 而跳过 setupStream。
+      teardownStream();
     }
   }
 }
