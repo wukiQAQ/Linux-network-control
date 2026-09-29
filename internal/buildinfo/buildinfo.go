@@ -4,8 +4,9 @@
 // 避免出现"点了按钮只报 404"的困惑。
 package buildinfo
 
-// Version 是采集端版本号，与客户端保持同一主线。
-const Version = "0.23.1"
+// Version 是采集端版本号。采集端与客户端各自独立编号（见 AGENTS.md「版本号规则」），
+// 两个号段互不相干，不要把这里与 client/ 的版本号对齐。
+const Version = "0.23.2"
 
 // Features 列出该版本对外提供的可选能力；新增能力时在此追加。
 var Features = []string{"history", "sessions", "alerts", "capture.dump", "actions.run", "files", "stream", "topn", "system.upgrade", "capture.multiqueue", "capture.filter", "plugins", "capture.cpupin"}
