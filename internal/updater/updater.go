@@ -2,7 +2,8 @@
 //
 // 安全约束（默认全部生效，任一条不满足都拒绝升级）：
 //  1. 必须在配置里显式开启（[update] enabled = true）；
-//  2. 下载地址必须匹配白名单前缀（allowed_prefixes，为空则一律拒绝）；
+//  2. 下载地址必须匹配白名单（allowed_prefixes，为空则一律拒绝；按解析后的
+//     scheme + host（含端口）+ path 前缀比对，重定向的每一跳都要重新校验）；
 //  3. 必须提供并匹配 SHA256（64 位十六进制）；
 //  4. 下载内容必须是 Linux ELF 可执行文件，且有大小上限；
 //  5. 替换前备份原文件，替换用同目录 rename（原子）；失败不会破坏现有二进制。
@@ -71,14 +72,27 @@ type Updater struct {
 
 // New 创建执行器；默认 runner 会调用 systemctl 重启服务。
 func New(cfg Config) *Updater {
-	return &Updater{
-		cfg:    cfg,
-		client: &http.Client{Timeout: 60 * time.Second},
+	u := &Updater{
+		cfg: cfg,
 		runner: func(name string, args ...string) error {
 			return execCommand(name, args...)
 		},
 		last: Status{Enabled: cfg.Enabled},
 	}
+	u.client = &http.Client{
+		Timeout: 60 * time.Second,
+		// 重定向的每一跳都要重新过白名单，否则一个被允许的 302 就能把请求带出白名单。
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if err := checkAllowedURL(u.cfg, req.URL.String()); err != nil {
+				return err
+			}
+			if len(via) >= 10 {
+				return errors.New("重定向次数过多")
+			}
+			return nil
+		},
+	}
+	return u
 }
 
 // WithRunner 注入自定义命令执行器（测试用）。
@@ -109,17 +123,41 @@ func (u *Updater) record(url, sha string, err error, applied bool) {
 	}
 }
 
-// allowedURL 校验协议与白名单前缀。
+// allowedURL 校验协议与白名单。
 func (u *Updater) allowedURL(raw string) error {
+	return checkAllowedURL(u.cfg, raw)
+}
+
+// checkAllowedURL 判断 raw 是否命中白名单：
+//   - 请求自身必须是 http/https；
+//   - 与白名单条目逐项比对「解析后」的 scheme、Host（含端口语义）与 Path 前缀。
+//
+// 直接对未解析的原始字符串做前缀比较是不安全的：形如
+// https://dl.example.com@evil.com/releases/x 的地址，其 userinfo 是
+// dl.example.com、真实 Host 是 evil.com，原始前缀能匹配但请求会发往 evil.com。
+func checkAllowedURL(cfg Config, raw string) error {
 	parsed, err := url.Parse(raw)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return ErrURLNotAllowed
 	}
-	if len(u.cfg.AllowedPrefixes) == 0 {
+	if len(cfg.AllowedPrefixes) == 0 {
 		return fmt.Errorf("%w：未配置 allowed_prefixes", ErrURLNotAllowed)
 	}
-	for _, p := range u.cfg.AllowedPrefixes {
-		if p != "" && strings.HasPrefix(raw, p) {
+	for _, p := range cfg.AllowedPrefixes {
+		if p == "" {
+			continue
+		}
+		want, err := url.Parse(p)
+		if err != nil || (want.Scheme != "http" && want.Scheme != "https") || want.Host == "" {
+			continue
+		}
+		if !strings.EqualFold(parsed.Scheme, want.Scheme) {
+			continue
+		}
+		if !strings.EqualFold(parsed.Host, want.Host) {
+			continue
+		}
+		if strings.HasPrefix(parsed.Path, want.Path) {
 			return nil
 		}
 	}
