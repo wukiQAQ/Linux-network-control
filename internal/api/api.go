@@ -49,6 +49,13 @@ type Server struct {
 	ui             fs.FS
 }
 
+// maxHistorySeconds 限制 /traffic/history 的回溯窗口（30 天）。
+// 时间轴按 (since/step + 1) 预分配，必须有界，否则单个请求就能把内存打满。
+const maxHistorySeconds = 30 * 24 * 3600
+
+// maxPageSize 限制 /sessions 的单页条数。
+const maxPageSize = 100
+
 func New(cfg *config.Config, agg *aggregator.Agg, table *flow.Table, store storage.Backend, ui fs.FS) *Server {
 	return &Server{agg: agg, store: store, table: table, cfg: cfg, started: time.Now(), ui: ui}
 }
@@ -193,12 +200,26 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleHistory 聚合多个时序序列到同一时间轴上。
-// 参数：since（秒，默认 3600）、step（秒，默认 60）。
+// 参数：since（秒，默认 3600，上限 30 天）、step（秒，默认 60，范围 1~since）。
+//
+// since/step 都必须有界：下面要按 (since/step + 1) 预分配 rows，
+// 不设上限时 ?since=2147483647&step=1 会让单个未鉴权请求直接申请几十 GB 内存。
 func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	since := intParam(r, "since", 3600)
+	if since <= 0 {
+		since = 3600
+	}
+	if since > maxHistorySeconds {
+		since = maxHistorySeconds
+	}
 	step := intParam(r, "step", 60)
 	if step < 1 {
 		step = 1
+	}
+	// step 必须被 since 约束：step > since 时时间轴只有一个桶，
+	// 而下面 i*step 会被当作纳秒偏移算出远在 from 之外的 t。
+	if step > since {
+		step = since
 	}
 	to := time.Now().UTC()
 	from := to.Add(-time.Duration(since) * time.Second)
@@ -283,7 +304,9 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	case "icmp":
 		f.Proto = 1
 	}
-	if p, err := strconv.Atoi(q.Get("port")); err == nil && p > 0 {
+	// port 必须落在 uint16 范围内：原先只判 p > 0，
+	// ?port=70000 会被静默截断成 4464，用户以为查的是 70000 却拿到别的端口的数据。
+	if p, err := strconv.Atoi(q.Get("port")); err == nil && p > 0 && p <= 65535 {
 		f.Port = uint16(p)
 	}
 	page := intParam(r, "page", 1)
@@ -291,8 +314,12 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	if page < 1 {
 		page = 1
 	}
-	if pageSize > 100 {
-		pageSize = 100
+	// page_size 有上界也要有下界：0 或负数会原样传给存储层当作 LIMIT。
+	if pageSize < 1 {
+		pageSize = 10
+	}
+	if pageSize > maxPageSize {
+		pageSize = maxPageSize
 	}
 	rows, total, err := s.store.QuerySessions(f, pageSize, (page-1)*pageSize)
 	if err != nil {

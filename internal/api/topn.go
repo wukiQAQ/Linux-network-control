@@ -9,12 +9,16 @@ import (
 )
 
 // handleTopN 返回最近一段时间内的 TOP IP / 协议分布 / TOP 端口。
-// 参数：since（秒，默认 3600）、n（默认 10，上限 100）。
+// 参数：since（秒，默认 3600，上限 30 天）、n（默认 10，上限 100）。
 // 说明：聚合在存储层完成（SQLite 走 SQL GROUP BY），因此**不再有 2 万条样本上限**。
 func (s *Server) handleTopN(w http.ResponseWriter, r *http.Request) {
 	since := intParam(r, "since", 3600)
 	if since <= 0 {
 		since = 3600
+	}
+	// 上界与 /traffic/history 一致：since 极大时 time.Duration(since)*Second 会溢出。
+	if since > maxHistorySeconds {
+		since = maxHistorySeconds
 	}
 	n := intParam(r, "n", 10)
 	if n <= 0 || n > 100 {
