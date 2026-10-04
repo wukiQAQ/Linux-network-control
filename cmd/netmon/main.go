@@ -46,6 +46,10 @@ func main() {
 	applyCLIOverrides(cfg, *replayFile, *offline)
 	log.Printf("[config] machine=%s source=%s iface=%s tick=%v offline=%v listen=%s",
 		cfg.MachineID, cfg.Source, cfg.Iface, cfg.Tick, cfg.Offline, cfg.Listen)
+	// H2：token 为空且监听非回环时只提醒、不改默认值（改默认会让现有部署与文档失效）。
+	if w := api.AuthWarning(cfg.APIToken, cfg.Listen); w != "" {
+		log.Printf("[api] 【安全提醒】%s", w)
+	}
 
 	src, err := buildSource(cfg)
 	if err != nil {

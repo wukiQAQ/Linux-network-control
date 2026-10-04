@@ -6,8 +6,10 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -25,6 +27,57 @@ import (
 	"github.com/wukiQAQ/Linux-network-control/internal/storage"
 	"github.com/wukiQAQ/Linux-network-control/internal/updater"
 )
+
+// AuthWarning 判断当前配置是否处于「未配置令牌、且监听地址可能被同网段访问」的状态。
+// 返回空串表示无需提醒。
+//
+// 背景（《代码审查报告》H2）：`[api] token` 为空时整套鉴权中间件会被跳过，
+// 而默认监听是 `:8080`（所有网卡）。这里刻意**只做提醒、不改默认值**：
+// 改默认监听会让现有部署与文档全部失效，所以留给使用者自己决定。
+func AuthWarning(token, listen string) string {
+	if token != "" || listenIsLoopback(listen) {
+		return ""
+	}
+	return fmt.Sprintf("未配置 [api] token，且监听地址为 %s（非回环）。"+
+		"此时所有管理接口都无需认证：同网段的任何机器都能触发运维动作、下载白名单目录文件、触发自升级、读取实时流量。"+
+		"若这不是有意为之，请在配置里设置 [api] token，或把 api.listen 改为 127.0.0.1:8080（只允许本机访问）", listen)
+}
+
+// listenIsLoopback 判断监听地址是否只对本机可见。
+// 无法确定时返回 false（宁可多提醒一次，也不漏掉真正暴露的配置）。
+func listenIsLoopback(listen string) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(listen))
+	if err != nil {
+		// 没有端口（例如 `localhost`）时按整串当主机名；空串一律按非回环处理。
+		host = strings.TrimSpace(listen)
+		if host == "" {
+			return false
+		}
+	}
+	host = strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(host), "["), "]")
+	switch strings.ToLower(host) {
+	case "":
+		// `:8080`、`[::]:8080` —— 监听所有网卡
+		return false
+	case "localhost":
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		// 既不是 IP 也不是 localhost（例如某个主机名）：解析一次，任一结果落在回环段才算回环。
+		addrs, err := net.LookupHost(host)
+		if err != nil || len(addrs) == 0 {
+			return false
+		}
+		for _, a := range addrs {
+			if p := net.ParseIP(a); p == nil || !p.IsLoopback() {
+				return false
+			}
+		}
+		return true
+	}
+	return ip.IsLoopback()
+}
 
 // Server 聚合各模块依赖，提供 HTTP 处理器。
 type Server struct {
