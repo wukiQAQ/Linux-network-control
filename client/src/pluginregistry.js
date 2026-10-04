@@ -14,12 +14,24 @@ const WIDGET_TYPES = ["kpi", "table", "text"];
 const UNITS = ["", "bytes", "rate", "count", "percent", "ratio"];
 const API_PREFIX = "/api/v1/";
 
-// 插件只能读本机监控接口：拒绝绝对地址、协议相对地址、反斜杠与空白字符。
+// 插件只能读本机监控接口：拒绝绝对地址、协议相对地址、反斜杠、空白字符与目录回溯段。
 export function safeEndpoint(ep) {
   if (typeof ep !== "string" || !ep.startsWith(API_PREFIX)) return false;
   if (/[\s\\]/.test(ep)) return false;
   if (ep.startsWith("/api/v1//")) return false;
+  // 只检查 path 部分：query 里出现 `..`（例如 ?q=../）是普通参数值，不是路径回溯。
+  // 前导的 `/api/v1/` 只会引入一个空段，所以 split 后无需额外过滤空串。
+  const path = ep.split(/[?#]/)[0];
+  // 先按字面判断
+  if (hasDotSegment(path)) return false;
+  // 再按一次百分号解码判断，防止 `..%2f`、`%2e%2e` 这类编码绕过。
+  if (/%/.test(path) && hasDotSegment(decodeURIComponent(path))) return false;
   return true;
+}
+
+// 判断路径里是否存在 `.` 或 `..` 目录段（只看完整的 `/` 分隔段）。
+function hasDotSegment(path) {
+  return path.split("/").some((seg) => seg === ".." || seg === ".");
 }
 
 function validateWidget(w) {

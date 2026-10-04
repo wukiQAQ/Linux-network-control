@@ -59,6 +59,21 @@ test("safeEndpoint 只允许本机监控接口", () => {
   assert.equal(safeEndpoint(42), false);
 });
 
+test("safeEndpoint 拒绝目录回溯段", () => {
+  // 拼接目标 base 的 pathname 已被清空，`..` 仍可能把请求指到监控接口之外
+  assert.equal(safeEndpoint("/api/v1/../secret"), false);
+  assert.equal(safeEndpoint("/api/v1/a/../../b"), false);
+  assert.equal(safeEndpoint("/api/v1/a/./b"), false);
+  // 百分号编码不能绕过：解码后再判一次
+  assert.equal(safeEndpoint("/api/v1/%2e%2e/x"), false);
+  assert.equal(safeEndpoint("/api/v1/..%2fsecret"), false);
+  assert.equal(safeEndpoint("/api/v1/a%2f%2e%2e%2fb"), false);
+  // 下列不是回溯段，不应被误拒
+  assert.equal(safeEndpoint("/api/v1/topn?q=../etc"), true);
+  assert.equal(safeEndpoint("/api/v1/topn?a=1#../x"), true);
+  assert.equal(safeEndpoint("/api/v1/a%2fb"), true, "%2f 解码后是 a/b，不含回溯段");
+});
+
 test("normalizePlugins 去重、排序并补默认值", () => {
   const list = normalizePlugins([
     { id: "b-panel", title: "B 面板", order: 20, widgets: [{ type: "text", text: "b" }] },
