@@ -1262,15 +1262,21 @@ function deleteProfile(base) {
 }
 
 function withTimeout(promise, ms, label) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) =>
-      setTimeout(
-        () => reject(new Error(`${label}超时（${Math.round(ms / 1000)} 秒无响应）`)),
-        ms,
-      ),
-    ),
-  ]);
+  let timer = null;
+  // 无论成功、失败还是超时都清掉定时器，否则每次调用都会在事件循环里留下一个悬挂的
+  // setTimeout（界面长时间开着会不断累积）。
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      timer = null;
+      reject(new Error(`${label}超时（${Math.round(ms / 1000)} 秒无响应）`));
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  });
 }
 
 async function connect() {
@@ -1279,7 +1285,7 @@ async function connect() {
   // 若旧流还在跑（换服务器 / 换标签页 / 重连），Rust 侧那条无限 loop 任务会继续持有
   // 上一个 base+token 把它的 metd-snapshot 写进当前界面 —— 用户会看到「B 的界面 + A 的实时数据」，
   // 而且 A 的令牌还在 3 秒退避下被反复重连。
-  teardownStream();
+  await teardownStream();
   const norm = normalizeBaseUrl(form.base);
   if (!norm.ok) {
     setBanner("err", norm.error);
@@ -1295,6 +1301,8 @@ async function connect() {
   try {
     pushLog("调用内核：set_connection");
     await withTimeout(setConnection(norm.url, form.token), 10000, "初始化连接");
+    // 即便超时，内核里的 set_connection 其实可能已经成功写入连接信息；若本次尝试已被
+    // 取消/被新的尝试取代，就不能继续把它当成「已连上」（否则界面与内核状态会说谎）。
     if (!isCurrentAttempt(attempt, seq)) return;
     pushLog("内核 set_connection 完成");
     pushLog("请求实时数据 /api/v1/traffic/now");
@@ -1320,6 +1328,9 @@ async function connect() {
     if (!isCurrentAttempt(attempt, seq)) return; // 已取消，失败结果直接丢弃
     connected.value = false;
     const reason = errText(e);
+    // 「初始化连接」超时时，内核里可能已经真的写入了这台服务器的连接信息；界面既然判定
+    // 这次连接失败，就把内核里的残留连接一起清掉，避免后续请求打到这台服务器上。
+    if (/初始化连接/.test(reason)) clearConnection().catch(() => {});
     setBanner("err", "连接失败：" + reason);
     pushLog("失败：" + reason);
     if (/refused|拒绝|timed out|超时|error sending request/i.test(reason)) {
@@ -1337,11 +1348,20 @@ async function connect() {
   }
 }
 
+// 断开连接时清空抓包状态：否则「打开 Wireshark」会打开上一台服务器下载的旧 pcap，
+// 收尾轮询也会把状态请求打到刚接上的新服务器上。
+function resetCaptureState() {
+  capturing.value = false;
+  captureStatus.value = null;
+  capturePath.value = "";
+}
+
 // 连接过程中点「取消连接」：让本次尝试的序号失效，后续结果全部忽略
 function cancelConnect() {
   if (!connecting.value) return;
   cancelAttempt(attempt);
   connecting.value = false;
+  resetCaptureState();
   setBanner("idle", "已取消连接");
   pushLog("已取消连接（已在途的请求会在后台结束，结果被忽略）");
   notify(cancelNotice(form.name || form.base));
@@ -1349,10 +1369,11 @@ function cancelConnect() {
 }
 
 async function disconnect() {
-  teardownStream();
+  await teardownStream();
   stopTimers();
   connected.value = false;
   failCount = 0;
+  resetCaptureState();
   plugins.value = [];
   pluginWarnings.value = [];
   pluginsEnabled.value = false;
@@ -1462,12 +1483,24 @@ async function setupStream() {
 }
 
 async function teardownStream() {
-  if (!streamStarted.value) return;
   streamStarted.value = false;
   try {
     await stopStream();
   } catch {
     // 忽略
+  }
+  // unlisten 必须显式调用：原先只停 Rust 侧的 SSE 任务，这两个前端监听句柄一直挂着，
+  // 每次 reconnect 都会再叠一层（旧句柄仍会把事件写进当前界面）。
+  const offs = [unlistenSnapshot, unlistenAlert];
+  unlistenSnapshot = null;
+  unlistenAlert = null;
+  for (const off of offs) {
+    if (typeof off !== "function") continue;
+    try {
+      await off();
+    } catch {
+      // 忽略单个句柄的注销失败
+    }
   }
 }
 
@@ -1714,6 +1747,10 @@ onMounted(async () => {
   appWindow.onCloseRequested(async (event) => {
     if (settings.closeToTray) {
       event.preventDefault();
+      // 关闭到托盘 = 界面不再显示，实时通道与定时器都没必要继续跑（会留下后台轮询、
+      // 也会让「已关闭」的窗口继续消耗令牌配额），但连接本身保留，再次点开图标能继续看。
+      await teardownStream();
+      stopTimers();
       await appWindow.hide();
     }
   });
@@ -1727,6 +1764,10 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   stopTimers();
   if (toastTimer) clearTimeout(toastTimer);
+  // filterTimer 是 400ms 的会话过滤防抖，卸载后仍会触发一次 loadSessions（打向已断开的连接）
+  if (filterTimer) clearTimeout(filterTimer);
+  filterTimer = null;
+  teardownStream();
 });
 </script>
 
