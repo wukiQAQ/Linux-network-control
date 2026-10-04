@@ -294,8 +294,67 @@ fn free_dest_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     first
 }
 
+// ---------------- 临时文件清理 ----------------
+// 两个下载目录（%TEMP%\MeTD-files、%TEMP%\MeTD-captures）只增不减，长期使用会一直占磁盘。
+// 这里只清 MeTD 自己创建的目录：按修改时间保留最新 keep 个，额外丢弃 6 小时前的陈旧文件
+// （防止用户刚下载、还打算打开的文件被立刻删掉）。
+//
+// 剪枝逻辑刻意与具体临时目录解耦，便于单元测试直接传入任意目录。
+const PRUNE_KEEP: usize = 20;
+const PRUNE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+
+fn prune_old_files(dir: &std::path::Path, keep: usize, max_age: std::time::Duration) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let meta = e.metadata().ok()?;
+            if !meta.is_file() {
+                return None;
+            }
+            let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            Some((mtime, e.path()))
+        })
+        .collect();
+    // 新的在前
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(max_age)
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    let mut removed = 0usize;
+    for (i, (mtime, path)) in files.into_iter().enumerate() {
+        if i < keep && *mtime >= cutoff {
+            continue;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// 启动时清理 MeTD 自己的两个临时下载目录，返回删除的文件数。
+fn cleanup_temp_dirs() -> usize {
+    let mut removed = 0usize;
+    for name in ["MeTD-files", "MeTD-captures"] {
+        let dir = std::env::temp_dir().join(name);
+        if dir.is_dir() {
+            removed += prune_old_files(&dir, PRUNE_KEEP, PRUNE_MAX_AGE);
+        }
+    }
+    if removed > 0 {
+        log_line(&format!("临时文件清理：删除 {removed} 个过期文件"));
+    }
+    removed
+}
+
 // 单次下载上限（与服务端 internal/api/files.go 的 maxDownloadBytes 对齐）。
 const MAX_DOWNLOAD_BYTES: u64 = 64 << 20;
+// 抓包文件单独放宽：正常抓包会明显大于普通文件，但同样不能无上限（否则恶意/异常服务端
+// 可以用超大响应把内存与临时目录打满）。
+const MAX_CAPTURE_BYTES: u64 = 256 << 20;
 
 #[tauri::command]
 async fn save_server_file(state: State<'_, ApiState>, path: String, name: String) -> Result<String, String> {
@@ -402,7 +461,25 @@ async fn save_capture(state: State<'_, ApiState>, path: String) -> Result<String
     if !resp.status().is_success() {
         return Err(format!("下载失败: HTTP {}", resp.status().as_u16()));
     }
+    // 抓包文件也必须有上限：原先直接 resp.bytes() 全读进内存，服务端返回一个超大响应
+    // 就会把客户端内存打满。
+    if let Some(len) = resp.content_length() {
+        if len > MAX_CAPTURE_BYTES {
+            return Err(format!(
+                "抓包文件过大（{} MB），上限 {} MB",
+                len >> 20,
+                MAX_CAPTURE_BYTES >> 20
+            ));
+        }
+    }
     let bytes = resp.bytes().await.map_err(|e| format!("读取响应失败: {e}"))?;
+    if bytes.len() as u64 > MAX_CAPTURE_BYTES {
+        return Err(format!(
+            "抓包文件过大（{} MB），上限 {} MB",
+            bytes.len() >> 20,
+            MAX_CAPTURE_BYTES >> 20
+        ));
+    }
     let dir = std::env::temp_dir().join("MeTD-captures");
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
     let stamp = SystemTime::now()
@@ -559,6 +636,8 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+            // 启动时清一次 MeTD 自己的临时下载目录（只留最新 20 个、且丢弃 6 小时前的）
+            let _ = cleanup_temp_dirs();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -578,4 +657,117 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("tauri 应用启动失败");
+}
+
+// ---------------- 单元测试 ----------------
+// 这些测试覆盖纯逻辑函数（不依赖 Tauri 运行时 / 网络），可用 `cargo test` 单独验证。
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    /// 用 Win32 SetFileTime 把文件的最后修改时间改到 1 小时前。
+    /// 必须等句柄关闭后 FS 才会刷新目录里的时间戳，所以后面的读目录操作会看到新时间。
+    #[cfg(windows)]
+    fn set_mtime_old(path: &std::path::Path) {
+        use std::os::windows::ffi::OsStrExt;
+        const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+        const OPEN_EXISTING: u32 = 3;
+        const FILE_ATTRIBUTE_NORMAL: u32 = 0x0000_0080;
+        extern "system" {
+            fn CreateFileW(
+                lp_file_name: *const u16,
+                dw_desired_access: u32,
+                dw_share_mode: u32,
+                lp_security_attributes: *mut core::ffi::c_void,
+                dw_creation_disposition: u32,
+                dw_flags_and_attributes: u32,
+                h_template_file: *mut core::ffi::c_void,
+            ) -> *mut core::ffi::c_void;
+            fn SetFileTime(
+                h_file: *mut core::ffi::c_void,
+                lp_creation_time: *const u64,
+                lp_last_access_time: *const u64,
+                lp_last_write_time: *const u64,
+            ) -> i32;
+            fn CloseHandle(h_object: *mut core::ffi::c_void) -> i32;
+        }
+        let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+        wide.push(0);
+        unsafe {
+            let h = CreateFileW(
+                wide.as_ptr(),
+                FILE_WRITE_ATTRIBUTES,
+                0,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                std::ptr::null_mut(),
+            );
+            // INVALID_HANDLE_VALUE == -1
+            if h as isize == -1 {
+                return;
+            }
+            let secs = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .saturating_sub(3600);
+            // FILETIME 单位是 100ns，起点 1601-01-01（与 UNIX 纪元差 11644473600 秒）
+            let ticks: u64 = (secs + 11_644_473_600) * 10_000_000;
+            SetFileTime(h, std::ptr::null(), std::ptr::null(), &ticks);
+            CloseHandle(h);
+        }
+    }
+
+    #[test]
+    fn prune_keeps_newest_files() {
+        let dir = std::env::temp_dir().join(format!("metd-prune-keep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建目录");
+        for name in ["a.pcap", "b.pcap", "c.pcap"] {
+            std::fs::write(dir.join(name), b"x").expect("写文件");
+        }
+        #[cfg(windows)]
+        set_mtime_old(&dir.join("a.pcap"));
+        let removed = prune_old_files(&dir, 2, Duration::from_secs(24 * 3600));
+        assert_eq!(removed, 1, "只应删掉最旧的 1 个");
+        assert!(!dir.join("a.pcap").exists(), "最旧的文件应被删除");
+        assert!(dir.join("b.pcap").exists());
+        assert!(dir.join("c.pcap").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_drops_stale_files_beyond_keep() {
+        let dir = std::env::temp_dir().join(format!("metd-prune-age-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建目录");
+        std::fs::write(dir.join("old.pcap"), b"x").expect("写文件");
+        #[cfg(windows)]
+        set_mtime_old(&dir.join("old.pcap"));
+        // max_age = 0：任何非“现在”的文件都算过期；keep 给足，验证年龄这一路生效
+        let removed = prune_old_files(&dir, 10, Duration::from_secs(0));
+        assert!(removed >= 1, "过期文件应被删除，实际删除 {removed} 个");
+        assert!(!dir.join("old.pcap").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_ignores_subdirectories() {
+        let dir = std::env::temp_dir().join(format!("metd-prune-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).expect("建子目录");
+        let removed = prune_old_files(&dir, 0, Duration::from_secs(0));
+        assert_eq!(removed, 0, "目录不该被当成文件删除");
+        assert!(dir.join("sub").is_dir(), "子目录应保留");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_on_missing_dir_is_noop() {
+        let dir = std::env::temp_dir().join(format!("metd-prune-missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(prune_old_files(&dir, 5, Duration::from_secs(60)), 0);
+    }
 }
