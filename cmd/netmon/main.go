@@ -34,6 +34,8 @@ func main() {
 	configPath := flag.String("config", "config.toml", "配置文件路径")
 	replayFile := flag.String("replay-file", "", "覆盖 capture.replay_file：本机回放的 pcap 文件路径")
 	offline := flag.Bool("offline", false, "覆盖 core.offline：离线分析模式（报文时间戳驱动聚合，回放结束不退出）")
+	dataDir := flag.String("data-dir", "", "覆盖 storage.data_dir：本机模式的数据目录（sqlite_path 一并挪入该目录）")
+	listen := flag.String("listen", "", "覆盖 api.listen：本机模式建议 127.0.0.1:8080，避免暴露到局域网")
 	flag.Parse()
 
 	cfg, err := config.Load(*configPath)
@@ -43,7 +45,12 @@ func main() {
 	} else if err != nil {
 		log.Fatalf("[config] 配置加载失败: %v", err)
 	}
-	applyCLIOverrides(cfg, *replayFile, *offline)
+	applyCLIOverrides(cfg, cliOverrides{
+		replayFile: *replayFile,
+		offline:    *offline,
+		dataDir:    *dataDir,
+		listen:     *listen,
+	})
 	log.Printf("[config] machine=%s source=%s iface=%s tick=%v offline=%v listen=%s",
 		cfg.MachineID, cfg.Source, cfg.Iface, cfg.Tick, cfg.Offline, cfg.Listen)
 	// H2：token 为空且监听非回环时只提醒、不改默认值（改默认会让现有部署与文档失效）。
@@ -89,6 +96,9 @@ func main() {
 	a.Alerts = eng
 	a.Dumper = dumper
 	srv := api.New(cfg, agg, table, store, webui.FS)
+	// 查询窗口跟随"数据时间"：离线回放的历史 pcap 数据时间远早于墙钟，
+	// 不注入的话 /topn 与 /traffic/history 会恒为空（见 api.SetDataClock）。
+	srv.SetDataClock(a.DataNow)
 	srv.SetAlerts(eng)
 	srv.SetDumper(dumper)
 	// 白名单运维动作：命令预览 + 参数校验 + 审计
@@ -129,7 +139,7 @@ func main() {
 
 	serveErr := make(chan error, 1)
 	go func() {
-		log.Printf("[api] HTTP 服务启动: http://localhost%s", cfg.Listen)
+		log.Printf("[api] HTTP 服务启动: %s", api.ListenURL(cfg.Listen))
 		serveErr <- httpSrv.ListenAndServe()
 	}()
 
@@ -154,6 +164,14 @@ func main() {
 	log.Printf("[main] 已退出")
 }
 
+// cliOverrides 汇总需要用命令行覆盖的配置项，避免参数列表越加越长。
+type cliOverrides struct {
+	replayFile string
+	offline    bool
+	dataDir    string
+	listen     string
+}
+
 // applyCLIOverrides 用命令行参数覆盖配置文件中的对应项：
 // 客户端需要直接拉起本机 pcap 回放，而不必先落一份临时配置文件。
 //
@@ -161,13 +179,25 @@ func main() {
 // 早期实现只覆盖 capture.replay_file，若配置里仍是默认的 source="synthetic"，
 // 程序会去造包空跑、把 -replay-file 完全忽略，而且不报任何错——用户只会看到
 // "跑起来了但数据不是我的 pcap"，极难自查。
-func applyCLIOverrides(cfg *config.Config, replayFile string, offline bool) {
-	if replayFile != "" {
-		cfg.ReplayFile = replayFile
+func applyCLIOverrides(cfg *config.Config, o cliOverrides) {
+	if o.replayFile != "" {
+		cfg.ReplayFile = o.replayFile
 		cfg.Source = "replay"
 	}
-	if offline {
+	if o.offline {
 		cfg.Offline = true
+	}
+	// -data-dir：本机模式要求所有落盘文件都待在同一个可清理目录里。
+	// 只改 data_dir 不够——默认 sqlite_path 是相对路径 data/netmon.db，
+	// 会随进程工作目录落到别处，用户卸载后留下残留文件。因此一并挪进新目录。
+	if o.dataDir != "" {
+		cfg.DataDir = o.dataDir
+		if cfg.Storage == "" || cfg.Storage == "sqlite" {
+			cfg.SQLitePath = filepath.Join(o.dataDir, "netmon.db")
+		}
+	}
+	if o.listen != "" {
+		cfg.Listen = o.listen
 	}
 }
 
