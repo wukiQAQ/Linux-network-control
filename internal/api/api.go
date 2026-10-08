@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -100,6 +101,9 @@ type Server struct {
 	pluginsEnabled bool
 	started        time.Time
 	ui             fs.FS
+	// nowFn 提供查询窗口使用的"数据时间"基准，nil 表示用墙钟。
+	// 离线回放时由 cmd/netmon 注入 app.DataNow，详见 SetDataClock。
+	nowFn func() time.Time
 }
 
 // maxHistorySeconds 限制 /traffic/history 的回溯窗口（30 天）。
@@ -111,6 +115,25 @@ const maxPageSize = 100
 
 func New(cfg *config.Config, agg *aggregator.Agg, table *flow.Table, store storage.Backend, ui fs.FS) *Server {
 	return &Server{agg: agg, store: store, table: table, cfg: cfg, started: time.Now(), ui: ui}
+}
+
+// SetDataClock 注入"数据时间"时钟（例如 app.DataNow）。
+//
+// 为什么需要：离线回放（source=replay + core.offline）的数据时间来自 pcap 报文
+// 时间戳，可能远早于墙钟。此时若仍按 time.Now() 取"最近 N 秒"窗口，回放数据会
+// 整体落在窗口之外——/traffic/history 与 /topn 返回空结果，而数据其实已经落盘。
+// 不注入时一律用墙钟，行为与历史版本完全一致。
+func (s *Server) SetDataClock(f func() time.Time) { s.nowFn = f }
+
+// now 返回查询窗口应使用的时间基准（UTC）：注入了数据时钟且其值非零时用它，
+// 否则退回墙钟。
+func (s *Server) now() time.Time {
+	if s.nowFn != nil {
+		if t := s.nowFn(); !t.IsZero() {
+			return t.UTC()
+		}
+	}
+	return time.Now().UTC()
 }
 
 // SetAlerts 注入告警引擎（nil 表示未启用，接口返回空列表）。
@@ -217,7 +240,10 @@ func (s *Server) statsMap() map[string]any {
 	}
 	last := s.agg.Last()
 	m := map[string]any{
-		"ts":           time.Now().UTC().Format(time.RFC3339),
+		// ts 是"当前数据时间"（见 Server.now）：离线回放时是最后一个报文的数据时间，
+		// 在线模式与墙钟一致；客户端据此区分"数据本身的时间"与服务器时间。
+		"ts":           s.now().Format(time.RFC3339),
+		"os":           runtime.GOOS,
 		"bps":          last.Bps,
 		"pps":          last.Pps,
 		"conns":        last.Active,
@@ -274,7 +300,9 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	if step > since {
 		step = since
 	}
-	to := time.Now().UTC()
+	// 窗口右端用"数据时间"（离线回放时即最后一条数据的时间），
+	// 否则回放历史 pcap 时 from/to 都在数据之后，曲线恒为空。
+	to := s.now()
 	from := to.Add(-time.Duration(since) * time.Second)
 	names := map[string]string{
 		"traffic.bps":      "bps",

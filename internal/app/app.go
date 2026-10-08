@@ -32,6 +32,9 @@ type App struct {
 	// 且数据源耗尽后不退出进程，直到 ctx 取消。默认由 cfg.Offline 初始化。
 	Offline bool
 	lastP   time.Time
+	// dataTs 是"当前数据时间"：离线回放时来自 pcap 报文时间戳（见 offlineClock），
+	// 在线模式等于墙钟；未产生数据时为零值。API 查询窗口以 DataNow 为准。
+	dataTs time.Time
 }
 
 func New(cfg *config.Config, src capture.Source, table *flow.Table, agg *aggregator.Agg, store storage.Backend) *App {
@@ -40,6 +43,11 @@ func New(cfg *config.Config, src capture.Source, table *flow.Table, agg *aggrega
 
 // HandlePacket 处理一个原始报文：解析失败计为一次丢弃，成功则进入流表与聚合。
 func (a *App) HandlePacket(p *capture.Packet) bool {
+	// 数据时间跟随报文时间戳：离线回放的数据时间可能远早于墙钟，
+	// 先于第一个聚合周期更新一次，查询窗口才不会落在数据之前。
+	if p.Ts.After(a.dataTs) {
+		a.dataTs = p.Ts
+	}
 	if a.Dumper != nil {
 		// 按需抓包：把原始报文写入 pcap，供 Wireshark 等工具分析
 		a.Dumper.Write(p)
@@ -56,6 +64,9 @@ func (a *App) HandlePacket(p *capture.Packet) bool {
 
 // TickOnce 执行一个聚合周期：输出采样、过期会话落盘、指标持久化、按策略清理。
 func (a *App) TickOnce(now time.Time) aggregator.Sample {
+	if now.After(a.dataTs) {
+		a.dataTs = now
+	}
 	s := a.Agg.Tick(now, a.Table.Active(), a.Table.Created(), a.Table.Closed())
 	for _, f := range a.Table.Expire(now) {
 		if err := a.Store.AppendFlow(a.toRecord(f)); err != nil {
@@ -71,6 +82,19 @@ func (a *App) TickOnce(now time.Time) aggregator.Sample {
 		}
 	}
 	return s
+}
+
+// DataNow 返回"当前数据时间"：离线回放时是最后一个报文/聚合周期的数据时间，
+// 在线模式即墙钟；尚未产生任何数据时退回墙钟。
+//
+// 为什么需要它：离线回放的历史 pcap，其数据时间可能远早于墙钟。API 层若一律用
+// time.Now() 取"最近 N 秒"，回放数据会整体落在窗口之外——TOP 榜与历史曲线恒为空，
+// 用户会以为"抓包数据没进去"。
+func (a *App) DataNow() time.Time {
+	if a.dataTs.IsZero() {
+		return time.Now().UTC()
+	}
+	return a.dataTs.UTC()
 }
 
 // evaluateAlerts 用本次采样评估告警规则并记录产生的事件。

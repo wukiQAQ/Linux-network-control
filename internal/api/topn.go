@@ -24,7 +24,9 @@ func (s *Server) handleTopN(w http.ResponseWriter, r *http.Request) {
 	if n <= 0 || n > 100 {
 		n = 10
 	}
-	from := time.Now().UTC().Add(-time.Duration(since) * time.Second)
+	// 窗口右端取"数据时间"（离线回放时即最后一条数据的时间）：
+	// 回放历史 pcap 时数据时间远早于墙钟，按墙钟取窗口会得到空榜。
+	from := s.now().Add(-time.Duration(since) * time.Second)
 	agg, err := s.store.AggregateFlows(storage.SessionFilter{From: from}, n)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "聚合会话失败: "+err.Error())
