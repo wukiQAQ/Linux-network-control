@@ -25,6 +25,7 @@ Thumbs.db
 /netmon-linux
 /netmon-linux.exe
 # Tauri 客户端
+/client/src-tauri/binaries/
 /client/node_modules/
 /client/dist/
 /client/src-tauri/target/
