@@ -99,3 +99,43 @@ test("lastUsedText 输出可读文案", () => {
   assert.equal(lastUsedText(now - 3 * 3600 * 1000, now), "3 小时前连接");
   assert.equal(lastUsedText(now - 2 * 86400 * 1000, now), "2 天前连接");
 });
+
+test("makeProfile 记住数据来源", () => {
+  assert.equal(makeProfile("a:1", { mode: "offline" }).mode, "offline");
+  assert.equal(makeProfile("a:1", { mode: "local" }).mode, "local");
+  // 非法/缺失的 mode 一律回落到 remote
+  assert.equal(makeProfile("a:1", { mode: "nope" }).mode, "remote");
+  assert.equal(makeProfile("a:1", {}).mode, "remote");
+  assert.equal(makeProfile("a:1").mode, "remote");
+});
+
+test("旧记录没有 mode 时按 remote 兼容", () => {
+  // 0.12.x 保存下来的记录里没有 mode 字段
+  const legacy = [{ name: "老服务器", base: "http://10.0.0.9:8080", token: "t", lastUsed: 123 }];
+  const list = normalizeProfiles(legacy);
+  assert.equal(list.length, 1);
+  assert.equal(list[0].mode, "remote");
+  // 归一化不会破坏原有的键与令牌
+  assert.equal(list[0].base, "http://10.0.0.9:8080");
+  assert.equal(list[0].token, "t");
+  assert.equal(list[0].lastUsed, 123);
+});
+
+test("normalizeProfiles 保留合法的 mode 并丢弃非法值", () => {
+  const list = normalizeProfiles([
+    { base: "a:1", mode: "offline", lastUsed: 2 },
+    { base: "b:2", mode: "本地", lastUsed: 1 },
+  ]);
+  const byBase = Object.fromEntries(list.map((p) => [p.base, p.mode]));
+  assert.equal(byBase["a:1"], "offline");
+  assert.equal(byBase["b:2"], "remote");
+});
+
+test("upsertProfile 与 profileKey 的语义不受 mode 影响", () => {
+  // 同一地址、不同 mode：仍然是同一条记录（mode 不参与去重键）
+  const first = upsertProfile([], { base: "http://a:1/", mode: "remote", lastUsed: 1 });
+  const second = upsertProfile(first, { base: "http://a:1", mode: "offline", lastUsed: 2 });
+  assert.equal(second.length, 1);
+  assert.equal(second[0].base, "http://a:1");
+  assert.equal(second[0].mode, "offline");
+});

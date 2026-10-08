@@ -3,6 +3,7 @@ use reqwest::header::AUTHORIZATION;
 use serde_json::Value;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuItem};
@@ -253,6 +254,274 @@ async fn probe_hosts(state: State<'_, ApiState>, hosts: Vec<Value>) -> Result<Va
         out.push(item);
     }
     Ok(Value::Array(out))
+}
+
+// ---------------- 本机引擎（netmon.exe sidecar，离线 pcap 回放） ----------------
+// 「数据来源 = 离线 pcap 文件」的落地方式：把选中的 pcap 交给本机 netmon.exe 回放，
+// 由它分配一个只监听 127.0.0.1 的 HTTP 地址，前端再用原有连接流程连上去。
+// 本机实时抓包（source = local）在采集端尚未实现，这里只返回明确的错误。
+
+// 返回给前端的本机引擎信息（字段名与 client/src/api.js 的约定一致）
+#[derive(Clone, serde::Serialize)]
+struct LocalEngineInfo {
+    base: String,
+    pid: u32,
+    data_dir: String,
+    mode: String,
+}
+
+// 正在运行的本机引擎：进程句柄 + 对外信息
+struct LocalEngine {
+    info: LocalEngineInfo,
+    child: Child,
+}
+
+// 由 Tauri 托管的本机引擎状态（同一时刻最多一个）
+struct LocalEngineState {
+    engine: Mutex<Option<LocalEngine>>,
+}
+
+// 本机引擎数据目录：%LOCALAPPDATA%\MeTD\local-data，
+// 退回 %USERPROFILE%\AppData\Local\MeTD\local-data（与 client/src/localsource.js 的规则一致）
+fn local_data_dir() -> Result<std::path::PathBuf, String> {
+    let local_app_data = std::env::var("LOCALAPPDATA")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let base = match local_app_data {
+        Some(dir) => dir,
+        None => {
+            let profile = std::env::var("USERPROFILE")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "无法确定本机数据目录（缺少 LOCALAPPDATA / USERPROFILE 环境变量）".to_string())?;
+            format!("{}\\AppData\\Local", profile.trim_end_matches(|c| c == '\\' || c == '/'))
+        }
+    };
+    Ok(std::path::PathBuf::from(base.trim_end_matches(|c| c == '\\' || c == '/'))
+        .join("MeTD")
+        .join("local-data"))
+}
+
+// 找一个空闲端口：绑定 127.0.0.1:0 让系统分配后立刻释放，把端口号交给 netmon
+fn free_local_port() -> Result<u16, String> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| format!("无法分配本机端口：{e}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("无法读取本机端口：{e}"))?
+        .port();
+    drop(listener);
+    Ok(port)
+}
+
+// 找本机 netmon.exe：① 应用资源目录 ② 可执行文件同目录 ③ 开发时的 deploy/windows
+fn resolve_netmon_exe(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(dir) = app.path().resource_dir() {
+        candidates.push(dir.join("netmon.exe"));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidates.push(parent.join("netmon.exe"));
+        }
+    }
+    candidates.push(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("deploy")
+            .join("windows")
+            .join("netmon.exe"),
+    );
+    for c in &candidates {
+        if c.is_file() {
+            return Ok(c.clone());
+        }
+    }
+    let looked = candidates
+        .iter()
+        .map(|c| c.display().to_string())
+        .collect::<Vec<_>>()
+        .join("、");
+    Err(format!(
+        "未找到本机 netmon.exe：请把 netmon.exe 放到应用安装目录或 deploy/windows 下（已查找：{looked}）"
+    ))
+}
+
+// 停掉当前本机引擎，返回是否真的停掉了一个进程
+fn stop_local_engine(state: &LocalEngineState) -> Result<bool, String> {
+    let mut guard = state
+        .engine
+        .lock()
+        .map_err(|_| "本机引擎状态锁获取失败".to_string())?;
+    let Some(mut running) = guard.take() else {
+        return Ok(false);
+    };
+    let pid = running.info.pid;
+    let killed = running.child.kill().is_ok();
+    // wait() 回收句柄，避免留下僵尸进程
+    let _ = running.child.wait();
+    log_line(&format!("local engine stopped pid={pid} killed={killed}"));
+    Ok(true)
+}
+
+// 启动本机引擎并等它就绪：mode=offline 时需要 pcap_path，local/remote 直接报错。
+// 参数与实际传给 netmon 的完全一致：-replay-file <pcap> -data-dir <dir> -listen 127.0.0.1:<port>
+#[tauri::command]
+async fn local_engine_start(
+    app: tauri::AppHandle,
+    mode: String,
+    pcap_path: Option<String>,
+) -> Result<LocalEngineInfo, String> {
+    let mode = mode.trim().to_string();
+    match mode.as_str() {
+        "remote" => return Err("远程模式不需要启动本机引擎".to_string()),
+        "local" => {
+            return Err(
+                "本机实时抓包尚未实现（采集端 Windows 抓包开发中），请改用「离线 pcap 文件」或连接远程 Linux"
+                    .to_string(),
+            )
+        }
+        "offline" => {}
+        other => return Err(format!("未知的数据来源模式：{other}")),
+    }
+    let pcap = pcap_path.unwrap_or_default().trim().to_string();
+    if pcap.is_empty() {
+        return Err("离线 pcap 模式必须选择 pcap 文件".to_string());
+    }
+    let pcap_path_buf = std::path::PathBuf::from(&pcap);
+    if !pcap_path_buf.is_file() {
+        return Err(format!("pcap 文件不存在或不是文件：{pcap}"));
+    }
+
+    let (exe, data_dir, port) = {
+        let engine_state = app.state::<LocalEngineState>();
+        // 重复点击「启动」时先停掉上一个，保证同一时刻只有一个本机引擎
+        let _ = stop_local_engine(&engine_state);
+        let exe = resolve_netmon_exe(&app)?;
+        let data_dir = local_data_dir()?;
+        std::fs::create_dir_all(&data_dir).map_err(|e| format!("创建数据目录失败 {}：{e}", data_dir.display()))?;
+        let port = free_local_port()?;
+        (exe, data_dir, port)
+    };
+
+    let listen = format!("127.0.0.1:{port}");
+    let base = format!("http://{listen}");
+    // netmon 的输出重定向到数据目录里的日志，健康检查失败时可以排查
+    let log_path = data_dir.join("netmon-engine.log");
+    let mut cmd = Command::new(&exe);
+    cmd.arg("-replay-file")
+        .arg(&pcap)
+        .arg("-data-dir")
+        .arg(&data_dir)
+        .arg("-listen")
+        .arg(&listen)
+        .stdin(Stdio::null());
+    match std::fs::File::create(&log_path) {
+        Ok(log) => {
+            let err_log = log.try_clone();
+            cmd.stdout(Stdio::from(log));
+            if let Ok(err_log) = err_log {
+                cmd.stderr(Stdio::from(err_log));
+            }
+        }
+        Err(_) => {
+            cmd.stdout(Stdio::null());
+            cmd.stderr(Stdio::null());
+        }
+    }
+    // Windows 下不弹出控制台窗口（CREATE_NO_WINDOW）
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    log_line(&format!(
+        "local_engine_start exe={} pcap={} data_dir={} listen={}",
+        exe.display(),
+        pcap,
+        data_dir.display(),
+        listen
+    ));
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("启动本机 netmon 失败（{}）：{e}", exe.display()))?;
+    let pid = child.id();
+
+    let info = LocalEngineInfo {
+        base: base.clone(),
+        pid,
+        data_dir: data_dir.display().to_string(),
+        mode: mode.clone(),
+    };
+
+    // 轮询 /api/v1/health 等它就绪，最多约 5 秒
+    let client = reqwest::Client::new();
+    let health_url = format!("{base}/api/v1/health");
+    let mut ready = false;
+    let mut exited: Option<String> = None;
+    for _ in 0..25 {
+        if let Ok(resp) = client
+            .get(&health_url)
+            .timeout(std::time::Duration::from_millis(800))
+            .send()
+            .await
+        {
+            if resp.status().is_success() {
+                ready = true;
+                break;
+            }
+        }
+        // 进程已经退出（例如 pcap 打不开）就没必要等满 5 秒
+        if let Ok(Some(status)) = child.try_wait() {
+            exited = Some(format!("{status}"));
+            break;
+        }
+        // 与 start_stream 中的退避一样：异步任务里短暂阻塞是可接受的
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+
+    if !ready {
+        let _ = child.kill();
+        let _ = child.wait();
+        let hint = format!("详见日志 {}", log_path.display());
+        return Err(match exited {
+            Some(code) => format!("本机 netmon 启动即退出（退出状态 {code}），{hint}"),
+            None => format!("本机 netmon 启动超时（5 秒内未就绪），{hint}"),
+        });
+    }
+
+    let engine_state = app.state::<LocalEngineState>();
+    let mut guard = engine_state
+        .engine
+        .lock()
+        .map_err(|_| "本机引擎状态锁获取失败".to_string())?;
+    *guard = Some(LocalEngine {
+        info: info.clone(),
+        child,
+    });
+    log_line(&format!("local engine ready base={base} pid={pid}"));
+    Ok(info)
+}
+
+// 停止本机引擎：结束进程并清空状态，返回是否真的停掉了一个进程
+#[tauri::command]
+fn local_engine_stop(app: tauri::AppHandle) -> Result<bool, String> {
+    let engine_state = app.state::<LocalEngineState>();
+    stop_local_engine(&engine_state)
+}
+
+// 查询本机引擎状态：没有运行时返回 null
+#[tauri::command]
+fn local_engine_status(app: tauri::AppHandle) -> Result<Option<LocalEngineInfo>, String> {
+    let engine_state = app.state::<LocalEngineState>();
+    let guard = engine_state
+        .engine
+        .lock()
+        .map_err(|_| "本机引擎状态锁获取失败".to_string())?;
+    Ok(guard.as_ref().map(|e| e.info.clone()))
 }
 
 // 不允许用系统默认程序打开的可执行 / 脚本类扩展名。
@@ -594,6 +863,10 @@ pub fn run() {
             conn: Mutex::new(None),
             stream: Mutex::new(None),
         })
+        // 本机引擎（离线 pcap 回放用的 netmon.exe）状态
+        .manage(LocalEngineState {
+            engine: Mutex::new(None),
+        })
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "显示 MeTD", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
@@ -653,7 +926,10 @@ pub fn run() {
             stop_stream,
             open_local_file,
             save_capture,
-            open_in_wireshark
+            open_in_wireshark,
+            local_engine_start,
+            local_engine_stop,
+            local_engine_status
         ])
         .run(tauri::generate_context!())
         .expect("tauri 应用启动失败");

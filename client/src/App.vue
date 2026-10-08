@@ -51,6 +51,61 @@
       <div class="panel-title">账号管理</div>
       <div class="muted hint">点击"切换"即可切换连接，图表会自动刷新</div>
 
+      <!-- 数据来源三选一：远程 Linux / 本机 Windows 实时抓包 / 离线 pcap 文件 -->
+      <div class="field">
+        <label>数据来源</label>
+        <div class="seg">
+          <button
+            v-for="m in SOURCE_MODES"
+            :key="m"
+            class="seg-btn"
+            :class="{ active: sourceMode === m }"
+            type="button"
+            @click="setSourceMode(m)"
+          >
+            {{ modeLabel(m) }}
+          </button>
+        </div>
+        <div class="muted small">当前来源：{{ modeLabel(sourceMode) }}</div>
+        <div v-if="sourceNotice" class="muted small" :class="{ warn: !sourceSupport.ok }">{{ sourceNotice }}</div>
+      </div>
+
+      <!-- 离线 pcap：先启动本机 netmon.exe 回放文件，再用它给出的地址走原有连接流程 -->
+      <div v-if="sourceMode === 'offline'" class="field">
+        <label>pcap 文件（本机路径）</label>
+        <input
+          v-model="sourcePref.pcapPath"
+          class="file-path"
+          placeholder="D:\pcaps\demo.pcap"
+          @change="persistSourcePref"
+          @keyup.enter="startLocalAnalysis"
+        />
+        <div class="muted small">也可以把 pcap 文件从资源管理器拖进窗口，路径会自动填入</div>
+        <div class="muted small">数据目录：{{ localDataDirView }}</div>
+        <div class="row">
+          <button class="btn primary grow" type="button" :disabled="localEngineBusy" @click="startLocalAnalysis">
+            {{ localEngineBusy ? "正在启动…" : "启动本机分析" }}
+          </button>
+          <button
+            class="btn danger"
+            type="button"
+            :disabled="localEngineBusy || !localEngine"
+            @click="stopLocalAnalysis"
+          >
+            停止本机分析
+          </button>
+        </div>
+        <div v-if="localEngine" class="muted small">本机引擎：{{ localEngine.base }}（PID {{ localEngine.pid }}）</div>
+        <div v-if="localEngineError" class="banner banner-err">{{ localEngineError }}</div>
+      </div>
+
+      <!-- 本机实时抓包：本版本尚未实现，按钮置灰并给出说明 -->
+      <div v-else-if="sourceMode === 'local'" class="field">
+        <div class="banner banner-err">
+          本机实时抓包尚未实现（采集端 Windows 抓包开发中），请改用「离线 pcap 文件」或连接远程 Linux
+        </div>
+      </div>
+
       <div class="field">
         <label>连接名称</label>
         <input v-model="form.name" placeholder="例如：CentOS" @keyup.enter="connect" />
@@ -74,7 +129,12 @@
         </div>
       </div>
       <div class="row">
-        <button class="btn primary grow" type="button" @click="connecting ? cancelConnect() : connect()">
+        <button
+          class="btn primary grow"
+          type="button"
+          :disabled="connectDisabled"
+          @click="connecting ? cancelConnect() : connect()"
+        >
           {{ connectButtonLabel(connecting, connected) }}
         </button>
         <button class="btn" type="button" @click="saveProfile">保存</button>
@@ -509,6 +569,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { listen } from "@tauri-apps/api/event";
 import KpiCards from "./components/KpiCards.vue";
 import TrafficChart from "./components/TrafficChart.vue";
@@ -528,6 +589,9 @@ import {
   autostartIsEnabled,
   clearConnection,
   errText,
+  localEngineStart,
+  localEngineStatus,
+  localEngineStop,
   openInWireshark,
   ping,
   saveCapture,
@@ -551,6 +615,16 @@ import {
   upsertProfile,
 } from "./profiles.js";
 import { loadSettings, saveSettings } from "./settings.js";
+import {
+  MODE_STORE_KEY,
+  SOURCE_MODES,
+  checkStartLocalAnalysis,
+  loadModePref,
+  modeHint,
+  modeLabel,
+  modeSupport,
+  normalizeMode,
+} from "./localsource.js";
 import { connectMessage, statusView } from "./status.js";
 import { chartModeLabel, normalizeChartMode } from "./chartmode.js";
 import { captureSupport, hasFeature } from "./capability.js";
@@ -616,6 +690,37 @@ const tabs = ref(loadTabs());
 const activeId = ref(tabs.value[0].id);
 
 const form = reactive({ name: "", base: "", token: "" });
+// ---------- 数据来源（远程 Linux / 本机 Windows 实时 / 离线 pcap 三选一） ----------
+// 远程：沿用原有连接流程；本机实时抓包：本版本尚未实现（采集端故意不声明 source.local）；
+// 离线：先启动本机 netmon.exe 回放 pcap，再按原有流程连到它分配的 127.0.0.1 端口。
+const savedSource = loadModePref(loadSourcePref());
+const sourceMode = ref(savedSource.mode);
+const sourcePref = reactive({ pcapPath: savedSource.pcapPath });
+// 本机引擎信息：{ base, pid, data_dir, mode }
+const localEngine = ref(null);
+const localEngineBusy = ref(false);
+const localEngineError = ref("");
+// 当前来源在当前环境是否可用（now.os 为采集端上报的运行系统）
+const sourceSupport = computed(() => modeSupport(sourceMode.value, now, now.os));
+// 优先显示不可用原因，其次显示来源本身的说明。
+// 离线模式的能力要等本机引擎起来、连上之后才知道：启动前只显示来源说明，
+// 否则会显示"未上报版本/能力"，让人误以为这个功能根本不可用。
+const sourceNotice = computed(() =>
+  sourceMode.value === "offline" && !localEngine.value
+    ? modeHint("offline")
+    : sourceSupport.value.hint || modeHint(sourceMode.value),
+);
+const connectDisabled = computed(() => {
+  if (sourceMode.value === "local") return true; // 尚未实现
+  if (sourceMode.value === "offline") return !localEngine.value; // 需先启动本机引擎
+  return false;
+});
+// 数据目录由 Rust 侧按 %LOCALAPPDATA%\MeTD\local-data 计算并回传，启动前只做说明
+const localDataDirView = computed(() =>
+  localEngine.value && localEngine.value.data_dir
+    ? localEngine.value.data_dir
+    : "%LOCALAPPDATA%\\MeTD\\local-data（启动时自动创建）",
+);
 const profiles = ref(loadProfiles());
 const connecting = ref(false);
 const connected = ref(false);
@@ -1219,6 +1324,145 @@ function closeTabUI(id) {
   pushLog("已关闭工作区页面");
 }
 
+// ---------- 数据来源：持久化、切换与本机引擎启停 ----------
+function loadSourcePref() {
+  try {
+    const raw = localStorage.getItem(MODE_STORE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    // 存储被禁用或内容损坏：按默认的远程来源处理
+    return null;
+  }
+}
+function persistSourcePref() {
+  try {
+    localStorage.setItem(
+      MODE_STORE_KEY,
+      JSON.stringify({ mode: sourceMode.value, pcapPath: sourcePref.pcapPath }),
+    );
+  } catch {
+    // 忽略存储失败
+  }
+}
+// 清空来自旧来源的时序数据：两套来源的数字（尤其是离线文件的"当前"值）不能混在同一张图上
+function clearDataSet() {
+  Object.keys(now).forEach((k) => delete now[k]);
+  history.value = [];
+  sessRows.value = [];
+  sessTotal.value = 0;
+  firingAlerts.value = [];
+  resetCaptureState();
+}
+// 切换数据来源：断开旧连接、停掉旧的数据集与本机引擎
+async function setSourceMode(mode) {
+  const next = normalizeMode(mode);
+  if (next === sourceMode.value) return;
+  sourceMode.value = next;
+  localEngineError.value = "";
+  if (connected.value) await disconnect();
+  clearDataSet();
+  if (next !== "offline") await stopLocalEngineSilently();
+  // 记住上次用过的 pcap 路径：切回来时不必重新选（用户仍可在输入框里改）
+  persistSourcePref();
+  pushLog(`数据来源切换为：${modeLabel(next)}`);
+  const hint = modeHint(next);
+  if (hint) pushLog(hint);
+  if (!sourceSupport.value.ok) pushLog(sourceSupport.value.hint);
+}
+// 把 pcap 文件拖进窗口即可填入路径（未安装 dialog 插件时的取路径方式之一）
+async function onDropPaths(paths) {
+  if (sourceMode.value !== "offline") return;
+  const first = Array.isArray(paths) ? paths.find((p) => typeof p === "string" && p.trim()) : "";
+  if (!first) return;
+  sourcePref.pcapPath = first;
+  persistSourcePref();
+  pushLog("已填入 pcap 文件：" + first);
+}
+// 启动本机 netmon.exe 回放 pcap；返回的 base 直接交给现有连接流程
+async function startLocalAnalysis() {
+  if (sourceMode.value !== "offline") return;
+  // 只校验 pcap 路径：本机引擎的能力要等它起来、连上之后才知道。
+  // 若在启动前就用采集端上报的 features 拦，首次使用时 `now` 还是空的，会永远点不动。
+  const gate = checkStartLocalAnalysis({ mode: sourceMode.value, pcapPath: sourcePref.pcapPath });
+  if (!gate.ok) {
+    localEngineError.value = gate.reason;
+    setBanner("err", gate.reason);
+    return;
+  }
+  const pcap = String(sourcePref.pcapPath || "").trim();
+  localEngineBusy.value = true;
+  localEngineError.value = "";
+  setBanner("busy", "正在启动本机分析引擎（netmon.exe）…");
+  pushLog("调用内核：local_engine_start（offline，" + pcap + "）");
+  try {
+    const info = await withTimeout(localEngineStart("offline", pcap), 30000, "启动本机分析引擎");
+    localEngine.value = info || null;
+    sourcePref.pcapPath = pcap;
+    persistSourcePref();
+    form.base = (info && info.base) || "";
+    form.token = "";
+    pushLog(`本机引擎已启动：${info.base}（PID ${info.pid}，数据目录 ${info.data_dir}）`);
+    setBanner("ok", "本机引擎已启动，正在连接…");
+    await connect();
+    // 连上之后 `now` 里才有本机 netmon 上报的版本与能力：旧版引擎可能不声明 capture.offline，
+    // 这时回放本身仍然可用，只记一条日志说明能力来源
+    if (!sourceSupport.value.ok) {
+      pushLog("本机引擎未上报离线回放能力：" + sourceSupport.value.hint);
+    }
+  } catch (e) {
+    const reason = errText(e);
+    localEngineError.value = reason;
+    localEngine.value = null;
+    setBanner("err", "启动本机引擎失败：" + reason);
+    pushLog("启动本机引擎失败：" + reason);
+  } finally {
+    localEngineBusy.value = false;
+  }
+}
+// 停止本机分析：先断开连接，再结束本机 netmon 进程
+async function stopLocalAnalysis() {
+  localEngineBusy.value = true;
+  try {
+    if (connected.value) await disconnect();
+    const stopped = await localEngineStop();
+    localEngine.value = null;
+    localEngineError.value = "";
+    form.base = "";
+    setBanner("ok", stopped ? "本机分析已停止" : "本机引擎本来就未运行");
+    pushLog(stopped ? "本机分析已停止，netmon 进程已退出" : "本机引擎未在运行");
+  } catch (e) {
+    const reason = errText(e);
+    localEngineError.value = reason;
+    setBanner("err", "停止本机引擎失败：" + reason);
+    pushLog("停止本机引擎失败：" + reason);
+  } finally {
+    localEngineBusy.value = false;
+  }
+}
+// 切换来源时静默收尾，避免弹一堆提示
+async function stopLocalEngineSilently() {
+  if (!localEngine.value) return;
+  try {
+    await localEngineStop();
+  } catch {
+    // 忽略收尾失败
+  }
+  localEngine.value = null;
+}
+// 界面重开时恢复本机引擎状态（进程可能还活着）
+async function refreshLocalEngineStatus() {
+  try {
+    const info = await localEngineStatus();
+    localEngine.value = info || null;
+    if (info && info.base && !connected.value) {
+      form.base = info.base;
+      form.token = "";
+    }
+  } catch {
+    // 状态查询失败不打断启动流程
+  }
+}
+
 function saveProfile() {
   const norm = normalizeBaseUrl(form.base);
   if (!norm.ok) {
@@ -1229,6 +1473,7 @@ function saveProfile() {
     name: form.name.trim() || norm.url,
     base: norm.url,
     token: form.token || "",
+    mode: sourceMode.value,
     lastUsed: Date.now(),
   };
   profiles.value = upsertProfile(profiles.value, item);
@@ -1238,7 +1483,7 @@ function saveProfile() {
 }
 // 连接成功后自动记入账号管理：同一个 IP 只保留一条，并刷新「最近连接」时间
 function rememberConnection(base) {
-  const item = { name: form.name.trim(), base, token: form.token || "", lastUsed: Date.now() };
+  const item = { name: form.name.trim(), base, token: form.token || "", mode: sourceMode.value, lastUsed: Date.now() };
   profiles.value = upsertProfile(profiles.value, item);
   persistProfiles();
   pushLog("已记入账号管理：" + profileName(item));
@@ -1247,6 +1492,9 @@ function useProfile(p) {
   form.name = p.name || p.base || "";
   form.base = p.base;
   form.token = p.token || "";
+  // 记住这条连接上次用的数据来源
+  sourceMode.value = normalizeMode(p.mode);
+  persistSourcePref();
   setBanner("ok", `已载入连接：${profileName(p)}（编辑中）`);
 }
 async function switchProfile(p) {
@@ -1460,6 +1708,8 @@ async function openCaptureInWireshark() {
 let lastStreamAt = 0;
 let unlistenSnapshot = null;
 let unlistenAlert = null;
+// pcap 拖拽填入路径的监听句柄
+let unlistenDragDrop = null;
 
 async function setupStream() {
   if (streamStarted.value) return;
@@ -1744,6 +1994,21 @@ onMounted(async () => {
       }
     }
   }
+  // 数据来源：恢复偏好（离线模式下本机引擎可能还在跑，把状态与地址找回来）
+  pushLog("数据来源：" + modeLabel(sourceMode.value));
+  await refreshLocalEngineStatus();
+  if (sourceMode.value === "offline" && !localEngine.value && !connected.value) {
+    pushLog("离线模式：请选择 pcap 文件后点「启动本机分析」");
+  }
+  // pcap 路径可以拖进来：WebView2 的 <input type="file"> 拿不到完整路径，
+  // 拖拽事件（Tauri 核心 API，无需 dialog 插件）给的是真实路径
+  try {
+    unlistenDragDrop = await getCurrentWebview().onDragDropEvent((event) => {
+      if (event.payload && event.payload.type === "drop") onDropPaths(event.payload.paths);
+    });
+  } catch (e) {
+    pushLog("拖拽填入 pcap 路径不可用：" + errText(e));
+  }
   appWindow.onCloseRequested(async (event) => {
     if (settings.closeToTray) {
       event.preventDefault();
@@ -1767,6 +2032,15 @@ onBeforeUnmount(() => {
   // filterTimer 是 400ms 的会话过滤防抖，卸载后仍会触发一次 loadSessions（打向已断开的连接）
   if (filterTimer) clearTimeout(filterTimer);
   filterTimer = null;
+  // 拖拽监听句柄同样要显式注销，否则每次挂载都会再叠一层
+  if (typeof unlistenDragDrop === "function") {
+    try {
+      unlistenDragDrop();
+    } catch {
+      // 忽略注销失败
+    }
+    unlistenDragDrop = null;
+  }
   teardownStream();
 });
 </script>

@@ -2,6 +2,8 @@
 // 设计要点：以「规范化后的服务器地址」作为唯一键，因此同一个人连过的 IP
 // 只会保留一条记录，连接成功后可自动写入这里。
 
+import { normalizeMode } from "./localsource.js";
+
 export const PROFILE_STORE_KEY = "netmon.profiles.v1";
 
 // 连接的唯一标识：去掉首尾空白与结尾斜杠，使 http://host:8080/ 与 http://host:8080 视为同一条。
@@ -18,6 +20,7 @@ export function profileName(p) {
 }
 
 // 生成一条标准记录；lastUsed 为最近一次成功连接的时间戳（毫秒）。
+// mode 为该连接上次使用的数据来源；旧记录没有这个字段，经 normalizeMode 后视为 remote。
 export function makeProfile(base, opts) {
   const o = opts && typeof opts === "object" ? opts : {};
   const lastUsed = Number(o.lastUsed);
@@ -25,6 +28,7 @@ export function makeProfile(base, opts) {
     name: typeof o.name === "string" ? o.name.trim() : "",
     base: profileKey(base),
     token: typeof o.token === "string" ? o.token : "",
+    mode: normalizeMode(o.mode),
     lastUsed: Number.isFinite(lastUsed) ? lastUsed : 0,
   };
 }

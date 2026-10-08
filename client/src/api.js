@@ -61,6 +61,20 @@ export function openInWireshark(path) {
   return invoke("open_in_wireshark", { path: path });
 }
 
+// 启动 / 停止 / 查询本机 netmon.exe（离线 pcap 回放用的 sidecar 引擎）
+// 返回 { base, pid, data_dir, mode }，base 可直接交给 setConnection 走原有连接流程
+export function localEngineStart(mode, pcapPath) {
+  return invoke("local_engine_start", { mode: mode, pcapPath: pcapPath || "" });
+}
+
+export function localEngineStop() {
+  return invoke("local_engine_stop");
+}
+
+export function localEngineStatus() {
+  return invoke("local_engine_status");
+}
+
 // 提取 Rust 命令返回的错误信息
 export function errText(e) {
   if (typeof e === "string") return e;
